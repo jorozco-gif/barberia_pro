@@ -32,7 +32,9 @@ from main import app  # noqa: E402
 
 import helpers  # noqa: E402
 
-ENVIAR_REAL = notificaciones.enviar  # la función de envío sin sustituir, para probarla por separado
+# La entrega SMTP completa y síncrona, sin sustituir, para probarla por separado. `enviar` (la que llaman los
+# mensajes) la ejecuta en un hilo; los mensajes de pruebas usan el doble `correos`.
+ENVIAR_REAL = notificaciones.entregar
 
 # Argon2 con parámetros mínimos solo para que las pruebas sean rápidas. Los hashes que genera siguen siendo
 # Argon2id y se verifican igual; en producción se usan los parámetros por defecto de security.py.
@@ -66,7 +68,8 @@ def correos(monkeypatch):
     enviados = []
     monkeypatch.setattr(
         notificaciones, "enviar",
-        lambda para, asunto, cuerpo: enviados.append({"para": para, "asunto": asunto, "cuerpo": cuerpo}),
+        lambda para, asunto, cuerpo, html=None: enviados.append(
+            {"para": para, "asunto": asunto, "cuerpo": cuerpo, "html": html}),
     )
     return enviados
 

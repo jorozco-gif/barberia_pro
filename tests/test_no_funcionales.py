@@ -4,6 +4,7 @@ import ast
 import datetime
 import logging
 import os
+import ssl
 import subprocess
 
 import pytest
@@ -181,8 +182,8 @@ def test_enviar_con_smtp_arma_y_entrega_el_mensaje(monkeypatch):
         def __exit__(self, *args):
             return False
 
-        def starttls(self):
-            registro["tls"] = True
+        def starttls(self, context=None):
+            registro["tls"] = context is not None and context.verify_mode == ssl.CERT_REQUIRED
 
         def login(self, usuario, password):
             registro["login"] = (usuario, password)
@@ -198,7 +199,8 @@ def test_enviar_con_smtp_arma_y_entrega_el_mensaje(monkeypatch):
     assert registro["conexion"] == ("smtp.test", 587, 10) and registro["tls"] is True
     assert registro["login"] == ("usuario", "secreto")
     mensaje = registro["mensaje"]
-    assert (mensaje["To"], mensaje["From"], mensaje["Subject"]) == ("ana@test.com", "citas@barbershop.test", "Asunto de prueba")
+    assert (mensaje["To"], mensaje["From"], mensaje["Subject"]) == (
+        "ana@test.com", "BarberShop Pro <citas@barbershop.test>", "Asunto de prueba")  # nombre por defecto del remitente
     assert mensaje.get_content().strip() == "Cuerpo de prueba"
 
 
