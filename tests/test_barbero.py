@@ -189,7 +189,7 @@ def test_cp_rf27_1_marcar_atendida_con_la_hora_de_inicio_llegada(client, db, rel
 
 def test_cp_rf27_2_cita_que_aun_no_empieza(client, db, reloj, h_barbero, barbero, cliente, corte):
     cita = crear_cita(db, cliente, barbero, corte, reloj.en(0), "08:01")  # empieza un minuto después de "ahora"
-    for estado in ("Atendida", "Inasistencia"):
+    for estado in ("Atendida", "Inasistencia", "Cancelada"):  # PN-06: los tres estados solo desde la hora de inicio
         assert cambiar(client, h_barbero, cita, estado).status_code == 400
     db.expire_all()
     assert db.get(models.Cita, cita.id).estado == models.ESTADO_PROGRAMADA
