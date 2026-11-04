@@ -274,7 +274,6 @@ export const api = {
 
   // Gestión de citas (cliente)
   misCitas: () => get('/citas/mias'),
-  obtenerCita: (id) => get(`/citas/${id}`),
   cancelarCita: (id) => post(`/citas/${id}/cancelar`),
   disponibilidadReprogramacion: (id, { fecha, franja }) => get(`/citas/${id}/disponibilidad`, { fecha, franja }),
   reprogramarCita: (id, { fecha, hora_inicio }) => post(`/citas/${id}/reprogramar`, { fecha, hora_inicio }),
