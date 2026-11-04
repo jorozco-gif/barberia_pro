@@ -1,0 +1,39 @@
+# Entornos virtuales Python
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Variables de entorno y secretos (Exigencia del profesor: Cero .env en repo)
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Bases de datos locales
+*.sqlite
+*.sqlite3
+*.db
+
+# IDEs y SO
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
