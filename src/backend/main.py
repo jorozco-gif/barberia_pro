@@ -1,17 +1,22 @@
 import os
 import json
 import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException, Query, status
+from fastapi import FastAPI, Depends, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from database import engine, Base, get_db
-import models
 import schemas
 import services
+from models import Usuario, ROL_ADMIN, ROL_BARBERO, ROL_CLIENTE
+
+# RNF-09: este archivo solo define las rutas, valida la sesión y el rol, y traduce los errores a HTTP.
+# Las reglas de negocio y el acceso a la base de datos están en services.py.
 
 
 @asynccontextmanager
@@ -24,7 +29,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="BarberShop Pro API",
     description="API REST para la gestión integral de citas, barberos y servicios.",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan
 )
 
@@ -44,194 +49,299 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(services.ErrorDeNegocio)
+async def manejar_error_de_negocio(request: Request, error: services.ErrorDeNegocio):
+    cabeceras = {"WWW-Authenticate": "Bearer"} if error.status_code == status.HTTP_401_UNAUTHORIZED else None
+    return JSONResponse(
+        status_code=error.status_code,
+        content={"detail": error.detalle, **error.datos},
+        headers=cabeceras,
+    )
+
+
+# ==========================================
+# Sesión y permisos por rol (RNF-02, RNF-03)
+# ==========================================
+_esquema_bearer = HTTPBearer(auto_error=False)
+
+
+def obtener_token(credenciales: Optional[HTTPAuthorizationCredentials] = Depends(_esquema_bearer)) -> str:
+    if credenciales is None or not credenciales.credentials:
+        raise services.NoAutorizado("Debes iniciar sesión.")
+    return credenciales.credentials
+
+
+def usuario_actual(token: str = Depends(obtener_token), db: Session = Depends(get_db)) -> Usuario:
+    return services.autenticar_sesion(db, token)
+
+
+def requiere_rol(*roles: str):
+    def verificar(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
+        if usuario.rol not in roles:
+            raise services.Prohibido("No tienes permiso para realizar esta acción.")
+        return usuario
+    return verificar
+
+
+solo_cliente = requiere_rol(ROL_CLIENTE)
+solo_barbero = requiere_rol(ROL_BARBERO)
+solo_admin = requiere_rol(ROL_ADMIN)
+cliente_o_admin = requiere_rol(ROL_CLIENTE, ROL_ADMIN)
+
+
 @app.get("/", tags=["Salud"])
 def health_check():
     return {
         "status": "online",
         "app": "BarberShop Pro API",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "docs_url": "/docs"
     }
 
 
 # ==========================================
-# Endpoints de Barberos
+# Cuentas y acceso (RF-01 a RF-04)
 # ==========================================
-@app.get("/api/barberos", response_model=List[schemas.BarberoResponse], tags=["Barberos"])
-def listar_barberos(solo_activos: bool = True, db: Session = Depends(get_db)):
-    query = db.query(models.Barbero)
-    if solo_activos:
-        query = query.filter(models.Barbero.activo == True)
-    return query.all()
+@app.post("/api/auth/registro", response_model=schemas.UsuarioResponse,
+          status_code=status.HTTP_201_CREATED, tags=["Cuentas"])
+def registrar_cliente(datos: schemas.RegistroCliente, db: Session = Depends(get_db)):
+    return services.registrar_cliente(db, datos)
 
 
-@app.post("/api/barberos", response_model=schemas.BarberoResponse, status_code=status.HTTP_201_CREATED, tags=["Barberos"])
-def crear_barbero(barbero_in: schemas.BarberoCreate, db: Session = Depends(get_db)):
-    existente = db.query(models.Barbero).filter(models.Barbero.email == barbero_in.email).first()
-    if existente:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Ya existe un barbero registrado con el correo '{barbero_in.email}'."
-        )
-    
-    nuevo_barbero = models.Barbero(**barbero_in.model_dump())
-    db.add(nuevo_barbero)
-    db.commit()
-    db.refresh(nuevo_barbero)
-    return nuevo_barbero
+@app.post("/api/auth/login", response_model=schemas.TokenResponse, tags=["Cuentas"])
+def iniciar_sesion(datos: schemas.LoginRequest, db: Session = Depends(get_db)):
+    token, usuario = services.iniciar_sesion(db, datos)
+    return schemas.TokenResponse(access_token=token, usuario=schemas.UsuarioResponse.model_validate(usuario))
 
 
-# ==========================================
-# Endpoints de Servicios
-# ==========================================
-@app.get("/api/servicios", response_model=List[schemas.ServicioResponse], tags=["Servicios"])
-def listar_servicios(solo_activos: bool = True, db: Session = Depends(get_db)):
-    query = db.query(models.Servicio)
-    if solo_activos:
-        query = query.filter(models.Servicio.activo == True)
-    return query.all()
+@app.post("/api/auth/logout", response_model=schemas.MensajeResponse, tags=["Cuentas"])
+def cerrar_sesion(
+    token: str = Depends(obtener_token),
+    _usuario: Usuario = Depends(usuario_actual),
+    db: Session = Depends(get_db),
+):
+    services.cerrar_sesion(db, token)
+    return {"detail": "Sesión cerrada."}
 
 
-@app.post("/api/servicios", response_model=schemas.ServicioResponse, status_code=status.HTTP_201_CREATED, tags=["Servicios"])
-def crear_servicio(servicio_in: schemas.ServicioCreate, db: Session = Depends(get_db)):
-    nuevo_servicio = models.Servicio(**servicio_in.model_dump())
-    db.add(nuevo_servicio)
-    db.commit()
-    db.refresh(nuevo_servicio)
-    return nuevo_servicio
+@app.post("/api/auth/recuperar", response_model=schemas.MensajeResponse, tags=["Cuentas"])
+def solicitar_recuperacion(datos: schemas.SolicitudRecuperacion, db: Session = Depends(get_db)):
+    services.solicitar_recuperacion(db, datos.email)
+    return {"detail": "Si el correo está registrado, te enviamos un enlace para recuperar tu contraseña."}
+
+
+@app.get("/api/auth/restablecer/validar", response_model=schemas.MensajeResponse, tags=["Cuentas"])
+def validar_enlace_de_recuperacion(token: str = Query(..., min_length=1), db: Session = Depends(get_db)):
+    services.validar_token_recuperacion(db, token)
+    return {"detail": "El enlace es válido."}
+
+
+@app.post("/api/auth/restablecer", response_model=schemas.MensajeResponse, tags=["Cuentas"])
+def restablecer_password(datos: schemas.RestablecerPassword, db: Session = Depends(get_db)):
+    services.restablecer_password(db, datos.token, datos.nueva_password)
+    return {"detail": "Contraseña actualizada. Ya puedes iniciar sesión."}
 
 
 # ==========================================
-# Endpoints de Citas y Agendamiento (Lógica Crítica RF-03 y RF-04)
+# Catálogo: barberos y servicios visibles (RF-13, RF-14)
 # ==========================================
-@app.post("/api/citas", response_model=schemas.CitaResponse, status_code=status.HTTP_201_CREATED, tags=["Citas"])
-def agendar_cita(cita_in: schemas.CitaCreate, db: Session = Depends(get_db)):
-    # 1. Validar existencia del barbero
-    barbero = db.query(models.Barbero).filter(models.Barbero.id == cita_in.barbero_id, models.Barbero.activo == True).first()
-    if not barbero:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"El barbero con ID {cita_in.barbero_id} no existe o no está activo."
-        )
-
-    # 2. Validar existencia del servicio
-    servicio = db.query(models.Servicio).filter(models.Servicio.id == cita_in.servicio_id, models.Servicio.activo == True).first()
-    if not servicio:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"El servicio con ID {cita_in.servicio_id} no existe o no está activo."
-        )
-
-    # 3. Calcular hora de fin
-    hora_fin = services.calcular_hora_fin(cita_in.hora_inicio, servicio.duracion_minutos)
-
-    # 4. Control de calidad estricto: Verificar choques de horario (RF-04)
-    disponible = services.verificar_disponibilidad_barbero(
-        db=db,
-        barbero_id=barbero.id,
-        fecha=cita_in.fecha,
-        hora_inicio=cita_in.hora_inicio,
-        hora_fin=hora_fin
-    )
-
-    if not disponible:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Conflicto de horario: El barbero ya tiene una cita reservada que se cruza con este horario."
-        )
-
-    # 5. Generar código de reserva y persistir
-    codigo = services.generar_codigo_reserva()
-
-    nueva_cita = models.Cita(
-        codigo_reserva=codigo,
-        barbero_id=cita_in.barbero_id,
-        servicio_id=cita_in.servicio_id,
-        cliente_nombre=cita_in.cliente_nombre,
-        cliente_telefono=cita_in.cliente_telefono,
-        cliente_email=cita_in.cliente_email,
-        fecha=cita_in.fecha,
-        hora_inicio=cita_in.hora_inicio,
-        hora_fin=hora_fin,
-        estado="Pendiente",
-        notas=cita_in.notas
-    )
-
-    db.add(nueva_cita)
-    db.commit()
-    db.refresh(nueva_cita)
-    return nueva_cita
+@app.get("/api/barberos", response_model=List[schemas.BarberoPublico], tags=["Catálogo"])
+def listar_barberos(_usuario: Usuario = Depends(cliente_o_admin), db: Session = Depends(get_db)):
+    return services.listar_barberos(db)
 
 
-@app.get("/api/citas", response_model=List[schemas.CitaResponse], tags=["Citas"])
-def listar_citas(
-    fecha: Optional[datetime.date] = None,
+@app.get("/api/servicios", response_model=List[schemas.ServicioResponse], tags=["Catálogo"])
+def listar_servicios(_usuario: Usuario = Depends(cliente_o_admin), db: Session = Depends(get_db)):
+    return services.listar_servicios(db)
+
+
+# ==========================================
+# Administrador: barberos, servicios y citas (RF-05 a RF-10, RF-28)
+# ==========================================
+@app.get("/api/admin/barberos", response_model=List[schemas.BarberoResponse], tags=["Administrador"])
+def admin_listar_barberos(_admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db)):
+    return services.listar_barberos(db, solo_activos=False)
+
+
+@app.post("/api/admin/barberos", response_model=schemas.BarberoResponse,
+          status_code=status.HTTP_201_CREATED, tags=["Administrador"])
+def admin_crear_barbero(
+    datos: schemas.BarberoCreate, _admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db)
+):
+    return services.crear_barbero(db, datos)
+
+
+@app.patch("/api/admin/barberos/{barbero_id}", response_model=schemas.BarberoResponse, tags=["Administrador"])
+def admin_actualizar_barbero(
+    barbero_id: int, datos: schemas.BarberoUpdate,
+    _admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db),
+):
+    return services.actualizar_barbero(db, barbero_id, datos)
+
+
+@app.delete("/api/admin/barberos/{barbero_id}", response_model=schemas.BarberoResponse, tags=["Administrador"])
+def admin_eliminar_barbero(
+    barbero_id: int, _admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db)
+):
+    return services.eliminar_barbero(db, barbero_id)
+
+
+@app.post("/api/admin/servicios", response_model=schemas.ServicioResponse,
+          status_code=status.HTTP_201_CREATED, tags=["Administrador"])
+def admin_crear_servicio(
+    datos: schemas.ServicioCreate, _admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db)
+):
+    return services.crear_servicio(db, datos)
+
+
+@app.patch("/api/admin/servicios/{servicio_id}", response_model=schemas.ServicioResponse, tags=["Administrador"])
+def admin_actualizar_servicio(
+    servicio_id: int, datos: schemas.ServicioUpdate,
+    _admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db),
+):
+    return services.actualizar_servicio(db, servicio_id, datos)
+
+
+@app.delete("/api/admin/servicios/{servicio_id}", response_model=schemas.ServicioResponse, tags=["Administrador"])
+def admin_eliminar_servicio(
+    servicio_id: int, _admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db)
+):
+    return services.eliminar_servicio(db, servicio_id)
+
+
+@app.get("/api/admin/citas", response_model=List[schemas.CitaResponse], tags=["Administrador"])
+def admin_listar_citas(
     barbero_id: Optional[int] = None,
+    fecha: Optional[datetime.date] = None,
     estado: Optional[str] = None,
-    db: Session = Depends(get_db)
+    _admin: Usuario = Depends(solo_admin),
+    db: Session = Depends(get_db),
 ):
-    query = db.query(models.Cita)
-    if fecha:
-        query = query.filter(models.Cita.fecha == fecha)
-    if barbero_id:
-        query = query.filter(models.Cita.barbero_id == barbero_id)
-    if estado:
-        query = query.filter(models.Cita.estado == estado)
-    
-    return query.order_by(models.Cita.hora_inicio.asc()).all()
-
-
-@app.get("/api/citas/codigo/{codigo_reserva}", response_model=schemas.CitaResponse, tags=["Citas"])
-def buscar_cita_por_codigo(codigo_reserva: str, db: Session = Depends(get_db)):
-    cita = db.query(models.Cita).filter(models.Cita.codigo_reserva == codigo_reserva.strip().upper()).first()
-    if not cita:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No se encontró ninguna cita con el código '{codigo_reserva}'."
-        )
-    return cita
-
-
-@app.patch("/api/citas/{cita_id}/estado", response_model=schemas.CitaResponse, tags=["Citas"])
-def actualizar_estado_cita(cita_id: int, estado_in: schemas.CitaEstadoUpdate, db: Session = Depends(get_db)):
-    cita = db.query(models.Cita).filter(models.Cita.id == cita_id).first()
-    if not cita:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Cita con ID {cita_id} no encontrada."
-        )
-
-    # Regla de calidad: Un estado finalizado no puede cambiarse
-    if cita.estado == "Finalizada":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Una cita marcada como 'Finalizada' no puede modificar su estado."
-        )
-
-    cita.estado = estado_in.estado
-    db.commit()
-    db.refresh(cita)
-    return cita
+    return services.listar_citas(db, barbero_id, fecha, estado)
 
 
 # ==========================================
-# Consulta de Disponibilidad de Turnos
+# Barbero: disponibilidad, bloqueos, agenda y estados (RF-11, RF-12, RF-26, RF-27)
 # ==========================================
-@app.get("/api/disponibilidad", response_model=List[schemas.SlotHorario], tags=["Disponibilidad"])
+@app.get("/api/barbero/disponibilidad", response_model=List[schemas.DisponibilidadResponse], tags=["Barbero"])
+def listar_disponibilidad(barbero: Usuario = Depends(solo_barbero), db: Session = Depends(get_db)):
+    return services.listar_disponibilidad(db, barbero)
+
+
+@app.post("/api/barbero/disponibilidad", response_model=schemas.DisponibilidadResponse,
+          status_code=status.HTTP_201_CREATED, tags=["Barbero"])
+def agregar_disponibilidad(
+    datos: schemas.DisponibilidadCreate, barbero: Usuario = Depends(solo_barbero), db: Session = Depends(get_db)
+):
+    return services.agregar_disponibilidad(db, barbero, datos)
+
+
+@app.delete("/api/barbero/disponibilidad/{disponibilidad_id}", response_model=schemas.MensajeResponse, tags=["Barbero"])
+def eliminar_disponibilidad(
+    disponibilidad_id: int, barbero: Usuario = Depends(solo_barbero), db: Session = Depends(get_db)
+):
+    services.eliminar_disponibilidad(db, barbero, disponibilidad_id)
+    return {"detail": "Horario eliminado."}
+
+
+@app.get("/api/barbero/bloqueos", response_model=List[schemas.BloqueoResponse], tags=["Barbero"])
+def listar_bloqueos(barbero: Usuario = Depends(solo_barbero), db: Session = Depends(get_db)):
+    return services.listar_bloqueos(db, barbero)
+
+
+@app.post("/api/barbero/bloqueos", response_model=schemas.BloqueoResponse,
+          status_code=status.HTTP_201_CREATED, tags=["Barbero"])
+def agregar_bloqueo(
+    datos: schemas.BloqueoCreate, barbero: Usuario = Depends(solo_barbero), db: Session = Depends(get_db)
+):
+    return services.agregar_bloqueo(db, barbero, datos)
+
+
+@app.delete("/api/barbero/bloqueos/{bloqueo_id}", response_model=schemas.MensajeResponse, tags=["Barbero"])
+def eliminar_bloqueo(bloqueo_id: int, barbero: Usuario = Depends(solo_barbero), db: Session = Depends(get_db)):
+    services.eliminar_bloqueo(db, barbero, bloqueo_id)
+    return {"detail": "Bloqueo eliminado."}
+
+
+@app.get("/api/barbero/agenda", response_model=List[schemas.CitaResponse], tags=["Barbero"])
+def agenda_del_barbero(
+    fecha: Optional[datetime.date] = Query(None, description="Por defecto, hoy"),
+    vista: Literal["dia", "semana"] = "dia",
+    barbero: Usuario = Depends(solo_barbero),
+    db: Session = Depends(get_db),
+):
+    return services.agenda_barbero(db, barbero, fecha, vista)
+
+
+@app.patch("/api/citas/{cita_id}/estado", response_model=schemas.CitaResponse, tags=["Barbero"])
+def actualizar_estado_cita(
+    cita_id: int, datos: schemas.CitaEstadoUpdate,
+    barbero: Usuario = Depends(solo_barbero), db: Session = Depends(get_db),
+):
+    return services.actualizar_estado_cita(db, barbero, cita_id, datos.estado)
+
+
+# ==========================================
+# Cliente: agendamiento (RF-15 a RF-21)
+# ==========================================
+@app.get("/api/citas/resumen", response_model=schemas.ResumenCitaResponse, tags=["Citas"])
+def resumen_de_servicios(
+    servicios_ids: List[int] = Query(..., min_length=1),
+    _cliente: Usuario = Depends(solo_cliente),
+    db: Session = Depends(get_db),
+):
+    return services.calcular_resumen(db, servicios_ids)
+
+
+@app.get("/api/disponibilidad", response_model=List[schemas.SlotHorario], tags=["Citas"])
 def consultar_disponibilidad(
-    barbero_id: int = Query(..., description="ID del barbero a consultar"),
-    fecha: datetime.date = Query(..., description="Fecha de interés"),
-    servicio_id: int = Query(..., description="Servicio deseado para calcular duración"),
-    db: Session = Depends(get_db)
+    barbero_id: int = Query(..., gt=0),
+    fecha: datetime.date = Query(...),
+    franja: schemas.Franja = Query(...),
+    servicios_ids: List[int] = Query(..., min_length=1),
+    _cliente: Usuario = Depends(solo_cliente),
+    db: Session = Depends(get_db),
 ):
-    servicio = db.query(models.Servicio).filter(models.Servicio.id == servicio_id, models.Servicio.activo == True).first()
-    if not servicio:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Servicio no encontrado.")
+    return services.consultar_disponibilidad(db, barbero_id, fecha, franja, servicios_ids)
 
-    slots = services.generar_slots_del_dia(
-        db=db,
-        barbero_id=barbero_id,
-        fecha=fecha,
-        duracion_minutos=servicio.duracion_minutos
-    )
-    return slots
+
+@app.post("/api/citas", response_model=schemas.CitaResponse, status_code=status.HTTP_201_CREATED, tags=["Citas"])
+def agendar_cita(datos: schemas.CitaCreate, cliente: Usuario = Depends(solo_cliente), db: Session = Depends(get_db)):
+    return services.agendar_cita(db, cliente, datos)
+
+
+# ==========================================
+# Cliente: gestión de sus citas (RF-22 a RF-25)
+# ==========================================
+@app.get("/api/citas/mias", response_model=List[schemas.CitaResponse], tags=["Citas"])
+def mis_citas(cliente: Usuario = Depends(solo_cliente), db: Session = Depends(get_db)):
+    return services.listar_mis_citas(db, cliente)
+
+
+@app.get("/api/citas/{cita_id}", response_model=schemas.CitaResponse, tags=["Citas"])
+def obtener_cita(cita_id: int, usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)):
+    return services.obtener_cita_visible(db, usuario, cita_id)
+
+
+@app.post("/api/citas/{cita_id}/cancelar", response_model=schemas.CitaResponse, tags=["Citas"])
+def cancelar_cita(cita_id: int, cliente: Usuario = Depends(solo_cliente), db: Session = Depends(get_db)):
+    return services.cancelar_cita(db, cliente, cita_id)
+
+
+@app.get("/api/citas/{cita_id}/disponibilidad", response_model=List[schemas.SlotHorario], tags=["Citas"])
+def disponibilidad_para_reprogramar(
+    cita_id: int,
+    fecha: datetime.date = Query(...),
+    franja: schemas.Franja = Query(...),
+    cliente: Usuario = Depends(solo_cliente),
+    db: Session = Depends(get_db),
+):
+    return services.horarios_para_reprogramar(db, cliente, cita_id, fecha, franja)
+
+
+@app.post("/api/citas/{cita_id}/reprogramar", response_model=schemas.CitaResponse, tags=["Citas"])
+def reprogramar_cita(
+    cita_id: int, datos: schemas.CitaReprogramar,
+    cliente: Usuario = Depends(solo_cliente), db: Session = Depends(get_db),
+):
+    return services.reprogramar_cita(db, cliente, cita_id, datos)

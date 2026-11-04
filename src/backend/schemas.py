@@ -233,7 +233,8 @@ class BloqueoResponse(BaseModel):
 # Citas (RF-14 a RF-20, RF-22 a RF-28)
 # ==========================================
 class CitaCreate(BaseModel):
-    """El cliente sale de la sesión, no del cuerpo. La fecha pasada (HTTP 400) se valida en el servicio."""
+    """El cliente sale de la sesión, no del cuerpo. La fecha pasada (HTTP 400) y el intervalo de PN-02 se validan
+    en el servicio: una hora fuera del intervalo que choca con otra cita debe responder 409, no 422 (CA-20.3)."""
 
     barbero_id: int = Field(..., gt=0)
     servicios_ids: List[int] = Field(..., min_length=1, description="Uno o varios servicios (RF-14)")
@@ -250,22 +251,12 @@ class CitaCreate(BaseModel):
             raise ValueError("No repitas el mismo servicio.")
         return v
 
-    @field_validator("hora_inicio")
-    @classmethod
-    def validar_intervalo(cls, v: datetime.time) -> datetime.time:
-        return _validar_intervalo(v)
-
 
 class CitaReprogramar(BaseModel):
-    """Nuevo horario del mismo barbero (RF-24)."""
+    """Nuevo horario del mismo barbero (RF-24). Igual que en CitaCreate, el intervalo de PN-02 se valida en el servicio."""
 
     fecha: datetime.date
     hora_inicio: datetime.time
-
-    @field_validator("hora_inicio")
-    @classmethod
-    def validar_intervalo(cls, v: datetime.time) -> datetime.time:
-        return _validar_intervalo(v)
 
 
 class CitaEstadoUpdate(BaseModel):
@@ -317,3 +308,18 @@ class SlotHorario(BaseModel):
     hora_fin: str
     disponible: bool
     motivo: Optional[str] = None
+
+
+# ==========================================
+# Respuestas auxiliares
+# ==========================================
+class MensajeResponse(BaseModel):
+    detail: str
+
+
+class ResumenCitaResponse(BaseModel):
+    """Total y duración de los servicios elegidos (RF-15)."""
+
+    servicios: List[ServicioResponse]
+    total: Decimal
+    duracion_total_minutos: int
