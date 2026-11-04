@@ -125,15 +125,26 @@ def test_cp_rf08_4_duracion_cero(client, h_admin):
     assert crear(client, h_admin, duracion_minutos=0).status_code == 422
 
 
-def test_cp_rf08_5_duracion_minima_y_maxima(client, h_admin):
+def test_cp_rf08_5_duracion_minima(client, h_admin):
     assert crear(client, h_admin, nombre="Minimo", duracion_minutos=1).status_code == 201
+
+
+def test_cp_rf08_6_duracion_maxima(client, h_admin):
     assert crear(client, h_admin, nombre="Maximo", duracion_minutos=240).status_code == 201
+
+
+def test_cp_rf08_7_duracion_que_supera_el_maximo(client, h_admin):
     assert crear(client, h_admin, nombre="Excede", duracion_minutos=241).status_code == 422
 
 
-def test_cp_rf08_6_precio_cero_y_texto(client, h_admin):
-    assert crear(client, h_admin, nombre="Cortesia", precio="0").status_code == 201
-    assert crear(client, h_admin, nombre="Texto", precio="abc").status_code == 422
+def test_cp_rf08_8_precio_cero(client, h_admin):
+    r = crear(client, h_admin, nombre="Cortesia", precio="0")
+    assert r.status_code == 201 and Decimal(r.json()["precio"]) == 0
+
+
+def test_cp_rf08_9_valores_no_numericos(client, h_admin):
+    assert crear(client, h_admin, nombre="Duracion texto", duracion_minutos="abc").status_code == 422
+    assert crear(client, h_admin, nombre="Precio texto", precio="abc").status_code == 422
 
 
 # ---------- RF-09 Modificación de servicios ----------
