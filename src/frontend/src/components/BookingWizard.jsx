@@ -1,115 +1,177 @@
-import React, { useState, useEffect } from 'react';
-import { Scissors, User, Calendar as CalendarIcon, Clock, Check, AlertCircle, ArrowRight, ArrowLeft } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Scissors, User, Calendar as CalendarIcon, Clock, Check, ArrowRight, ArrowLeft } from 'lucide-react';
+import { api } from '../api';
+import { useAuth } from '../AuthContext';
+import {
+  FRANJAS,
+  INTERVALO_MINUTOS,
+  TEXTOS_POLITICAS,
+  formatearFecha,
+  formatearHora,
+  formatearPrecio,
+  hoyColombia,
+  sumarDias,
+} from '../formato';
+import Alerta from './Alerta';
 
-const API_BASE = 'http://127.0.0.1:8000/api';
+export default function BookingWizard({ onBookingSuccess, onVerMisCitas }) {
+  const { usuario } = useAuth();
 
-export default function BookingWizard({ onBookingSuccess }) {
   const [step, setStep] = useState(1);
   const [servicios, setServicios] = useState([]);
   const [barberos, setBarberos] = useState([]);
+  const [loadingCatalogo, setLoadingCatalogo] = useState(true);
+  const [errorCatalogo, setErrorCatalogo] = useState('');
+  const [resumen, setResumen] = useState(null); // { servicios, total, duracion_total_minutos } calculado por el backend
+  const [loadingResumen, setLoadingResumen] = useState(false);
+  const [errorResumen, setErrorResumen] = useState('');
   const [slots, setSlots] = useState([]);
   const [loadingSlots, setLoadingSlots] = useState(false);
+  const [errorSlots, setErrorSlots] = useState('');
+  const [recargaSlots, setRecargaSlots] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [limiteAlcanzado, setLimiteAlcanzado] = useState(false);
 
   // Estado del formulario de reserva
-  const [selectedServicio, setSelectedServicio] = useState(null);
+  const [serviciosIds, setServiciosIds] = useState([]);
   const [selectedBarbero, setSelectedBarbero] = useState(null);
-  const [selectedDate, setSelectedDate] = useState(() => {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    return tomorrow.toISOString().split('T')[0];
-  });
+  const [selectedDate, setSelectedDate] = useState(() => sumarDias(hoyColombia(), 1));
+  const [franja, setFranja] = useState('');
   const [selectedSlot, setSelectedSlot] = useState(null);
-  const [cliente, setCliente] = useState({
-    nombre: '',
-    telefono: '',
-    email: '',
-    notas: ''
-  });
+  const [notas, setNotas] = useState('');
 
-  // Cargar servicios y barberos al montar
-  useEffect(() => {
-    fetch(`${API_BASE}/servicios`)
-      .then(res => res.json())
-      .then(data => setServicios(data))
-      .catch(err => console.error("Error al cargar servicios:", err));
-
-    fetch(`${API_BASE}/barberos`)
-      .then(res => res.json())
-      .then(data => setBarberos(data))
-      .catch(err => console.error("Error al cargar barberos:", err));
+  // Servicios y barberos activos (RF-13, RF-14)
+  const cargarCatalogo = useCallback(async () => {
+    setLoadingCatalogo(true);
+    setErrorCatalogo('');
+    try {
+      const [listaServicios, listaBarberos] = await Promise.all([api.servicios(), api.barberos()]);
+      setServicios(listaServicios);
+      setBarberos(listaBarberos);
+      return listaServicios;
+    } catch (err) {
+      setErrorCatalogo(err.message);
+      return null;
+    } finally {
+      setLoadingCatalogo(false);
+    }
   }, []);
 
-  // Cargar slots cuando cambie barbero, servicio o fecha
   useEffect(() => {
-    if (selectedBarbero && selectedServicio && selectedDate) {
-      setLoadingSlots(true);
-      setSelectedSlot(null);
-      fetch(`${API_BASE}/disponibilidad?barbero_id=${selectedBarbero.id}&fecha=${selectedDate}&servicio_id=${selectedServicio.id}`)
-        .then(res => res.json())
-        .then(data => {
-          setSlots(data);
-          setLoadingSlots(false);
-        })
-        .catch(err => {
-          console.error("Error al cargar disponibilidad:", err);
-          setLoadingSlots(false);
-        });
+    cargarCatalogo();
+  }, [cargarCatalogo]);
+
+  // Total y duración de los servicios elegidos: los calcula el backend (RF-15)
+  useEffect(() => {
+    if (serviciosIds.length === 0) {
+      setResumen(null);
+      setErrorResumen('');
+      return undefined;
     }
-  }, [selectedBarbero, selectedServicio, selectedDate]);
+    let activo = true;
+    setLoadingResumen(true);
+    setErrorResumen('');
+    api
+      .resumenCita(serviciosIds)
+      .then((data) => activo && setResumen(data))
+      .catch(async (err) => {
+        if (!activo) return;
+        setErrorResumen(err.message);
+        if (err.status === 404) {
+          // Un servicio dejó de estar disponible: se actualiza el catálogo y se descarta la selección.
+          setServiciosIds([]);
+          await cargarCatalogo();
+        }
+      })
+      .finally(() => activo && setLoadingResumen(false));
+    return () => {
+      activo = false;
+    };
+  }, [serviciosIds, cargarCatalogo]);
+
+  // Horarios libres del barbero para la fecha, franja y duración total (RF-18). Solo se piden en el paso 3.
+  useEffect(() => {
+    if (step !== 3) return undefined;
+    setSelectedSlot(null);
+    setErrorSlots('');
+    if (!selectedBarbero || !selectedDate || !franja || serviciosIds.length === 0) {
+      setSlots([]);
+      return undefined;
+    }
+    let activo = true;
+    setLoadingSlots(true);
+    api
+      .disponibilidad({ barberoId: selectedBarbero.id, fecha: selectedDate, franja, serviciosIds })
+      .then((data) => activo && setSlots(data))
+      .catch((err) => {
+        if (!activo) return;
+        setSlots([]);
+        setErrorSlots(err.message);
+      })
+      .finally(() => activo && setLoadingSlots(false));
+    return () => {
+      activo = false;
+    };
+  }, [step, selectedBarbero, selectedDate, franja, serviciosIds, recargaSlots]);
+
+  const alternarServicio = (id) => {
+    setErrorMessage('');
+    setServiciosIds((actuales) => (actuales.includes(id) ? actuales.filter((x) => x !== id) : [...actuales, id]));
+  };
+
+  const reiniciar = () => {
+    setStep(1);
+    setServiciosIds([]);
+    setSelectedBarbero(null);
+    setFranja('');
+    setSelectedSlot(null);
+    setNotas('');
+    setLimiteAlcanzado(false);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMessage('');
+    setLimiteAlcanzado(false);
     setSubmitting(true);
 
-    const payload = {
-      barbero_id: selectedBarbero.id,
-      servicio_id: selectedServicio.id,
-      cliente_nombre: cliente.nombre,
-      cliente_telefono: cliente.telefono,
-      cliente_email: cliente.email || null,
-      fecha: selectedDate,
-      hora_inicio: selectedSlot.hora_inicio,
-      notas: cliente.notas || null
-    };
-
     try {
-      const res = await fetch(`${API_BASE}/citas`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+      const cita = await api.crearCita({
+        barbero_id: selectedBarbero.id,
+        servicios_ids: serviciosIds,
+        fecha: selectedDate,
+        hora_inicio: selectedSlot.hora_inicio,
+        notas: notas.trim() || null,
       });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        if (res.status === 409) {
-          throw new Error("El horario seleccionado ya no está disponible. Por favor elige otro turno.");
-        } else if (res.status === 422) {
-          throw new Error("Por favor revisa que todos los datos ingresados sean correctos.");
-        } else {
-          throw new Error(data.detail || "Ocurrió un error al procesar la reserva.");
-        }
-      }
-
-      // Éxito: notificar al padre para abrir el modal
-      onBookingSuccess(data);
-
-      // Reiniciar formulario
-      setStep(1);
-      setSelectedServicio(null);
-      setSelectedBarbero(null);
-      setSelectedSlot(null);
-      setCliente({ nombre: '', telefono: '', email: '', notas: '' });
-
+      // Éxito: notificar al padre para abrir el modal y reiniciar el asistente
+      onBookingSuccess(cita);
+      reiniciar();
     } catch (err) {
       setErrorMessage(err.message);
+      if (err.status === 409) {
+        if (/l[ií]mite/i.test(err.message)) {
+          // Límite de citas programadas (CA-19.2): no se resuelve eligiendo otro horario.
+          setLimiteAlcanzado(true);
+        } else {
+          // Horario ocupado por otra reserva (CA-20.2): volver a elegir con la disponibilidad actualizada.
+          setSelectedSlot(null);
+          setStep(3);
+          setRecargaSlots((n) => n + 1);
+        }
+      }
     } finally {
       setSubmitting(false);
     }
   };
+
+  const cambiarFecha = (valor) => {
+    setErrorMessage('');
+    setSelectedDate(valor);
+  };
+
+  const horariosLibres = slots.filter((s) => s.disponible);
+  const duracionTotal = resumen?.duracion_total_minutos;
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
@@ -117,10 +179,10 @@ export default function BookingWizard({ onBookingSuccess }) {
       <div className="flex items-center justify-between mb-8 relative">
         <div className="absolute left-0 top-1/2 -translate-y-1/2 h-0.5 w-full bg-slate-800 -z-0" />
         {[
-          { num: 1, label: 'Servicio', icon: Scissors },
+          { num: 1, label: 'Servicios', icon: Scissors },
           { num: 2, label: 'Barbero', icon: User },
           { num: 3, label: 'Fecha y Hora', icon: CalendarIcon },
-          { num: 4, label: 'Confirmación', icon: Check }
+          { num: 4, label: 'Confirmación', icon: Check },
         ].map((item) => {
           const Icon = item.icon;
           const isDone = step > item.num;
@@ -146,58 +208,98 @@ export default function BookingWizard({ onBookingSuccess }) {
         })}
       </div>
 
-      {/* Alerta de Error */}
+      {/* Alertas de error */}
+      <Alerta tipo="error" className="mb-6">{errorCatalogo}</Alerta>
       {errorMessage && (
-        <div className="mb-6 p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center gap-3 text-rose-300">
-          <AlertCircle className="w-5 h-5 flex-shrink-0" />
-          <p className="text-sm">{errorMessage}</p>
-        </div>
+        <Alerta tipo="error" className="mb-6">
+          <p>{errorMessage}</p>
+          {limiteAlcanzado && onVerMisCitas && (
+            <button
+              type="button"
+              onClick={onVerMisCitas}
+              className="mt-2 underline underline-offset-2 hover:text-rose-200 transition"
+            >
+              Ver mis citas
+            </button>
+          )}
+        </Alerta>
       )}
 
       {/* ================= PASO 1: SERVICIOS ================= */}
       {step === 1 && (
         <div>
           <div className="text-center mb-6">
-            <h2 className="text-2xl font-bold text-white">Selecciona un Servicio</h2>
-            <p className="text-slate-400 text-sm mt-1">Elige la experiencia o tratamiento que deseas recibir.</p>
+            <h2 className="text-2xl font-bold text-white">Selecciona tus Servicios</h2>
+            <p className="text-slate-400 text-sm mt-1">Puedes elegir uno o varios servicios para la misma cita.</p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {servicios.map((s) => {
-              const selected = selectedServicio?.id === s.id;
-              return (
-                <div
-                  key={s.id}
-                  onClick={() => setSelectedServicio(s)}
-                  className={`p-5 rounded-2xl border cursor-pointer transition relative flex flex-col justify-between ${
-                    selected
-                      ? 'bg-amber-500/10 border-amber-500 shadow-lg shadow-amber-500/10'
-                      : 'bg-slate-900 border-slate-800 hover:border-slate-700'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-start justify-between">
+          {loadingCatalogo ? (
+            <div className="py-12 text-center text-slate-400 text-sm">Cargando servicios...</div>
+          ) : servicios.length === 0 ? (
+            <div className="py-12 text-center text-slate-500 text-sm">No hay servicios disponibles por el momento.</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {servicios.map((s) => {
+                const selected = serviciosIds.includes(s.id);
+                return (
+                  <button
+                    type="button"
+                    key={s.id}
+                    onClick={() => alternarServicio(s.id)}
+                    aria-pressed={selected}
+                    className={`p-5 rounded-2xl border cursor-pointer transition relative flex flex-col justify-between text-left ${
+                      selected
+                        ? 'bg-amber-500/10 border-amber-500 shadow-lg shadow-amber-500/10'
+                        : 'bg-slate-900 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between w-full gap-3">
                       <h3 className="font-bold text-lg text-white">{s.nombre}</h3>
-                      <span className="text-amber-400 font-bold text-lg">${Number(s.precio).toFixed(2)}</span>
+                      <span className="text-amber-400 font-bold text-lg">{formatearPrecio(s.precio)}</span>
                     </div>
-                    <p className="text-slate-400 text-xs mt-2 leading-relaxed">{s.descripcion}</p>
-                  </div>
-                  <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-800 text-xs text-slate-400">
-                    <span className="flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-amber-400" /> {s.duracion_minutos} minutos
-                    </span>
-                    <span className={`font-semibold ${selected ? 'text-amber-400' : 'text-slate-500'}`}>
-                      {selected ? 'Seleccionado ✓' : 'Elegir'}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
+                    <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-800 text-xs text-slate-400 w-full">
+                      <span className="flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-amber-400" /> {s.duracion_minutos} minutos
+                      </span>
+                      <span className={`font-semibold ${selected ? 'text-amber-400' : 'text-slate-500'}`}>
+                        {selected ? 'Seleccionado ✓' : 'Elegir'}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Resumen calculado por el backend (RF-15) */}
+          <div className="mt-6 bg-slate-900 border border-slate-800 rounded-2xl p-5">
+            <Alerta tipo="error" className="mb-3">{errorResumen}</Alerta>
+            <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+              <span className="text-slate-400">
+                {serviciosIds.length === 0
+                  ? 'Elige al menos un servicio para continuar.'
+                  : `${serviciosIds.length} ${serviciosIds.length === 1 ? 'servicio elegido' : 'servicios elegidos'}`}
+              </span>
+              <div className="flex items-center gap-6">
+                <span className="text-slate-400">
+                  Duración total:{' '}
+                  <strong className="text-white">
+                    {serviciosIds.length === 0 ? '0' : duracionTotal ?? '...'} min
+                  </strong>
+                </span>
+                <span className="text-slate-400">
+                  Total:{' '}
+                  <strong className="text-emerald-400 text-lg">
+                    {serviciosIds.length === 0 ? '$0' : resumen ? formatearPrecio(resumen.total) : '...'}
+                  </strong>
+                </span>
+              </div>
+            </div>
           </div>
 
           <div className="mt-8 flex justify-end">
             <button
-              disabled={!selectedServicio}
+              disabled={serviciosIds.length === 0 || !resumen || loadingResumen}
               onClick={() => setStep(2)}
               className="px-6 py-3 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:hover:bg-amber-500 text-slate-950 font-bold rounded-xl transition flex items-center gap-2"
             >
@@ -212,38 +314,54 @@ export default function BookingWizard({ onBookingSuccess }) {
         <div>
           <div className="text-center mb-6">
             <h2 className="text-2xl font-bold text-white">Selecciona a tu Barbero</h2>
-            <p className="text-slate-400 text-sm mt-1">Nuestros profesionales cuentan con especialidades certificadas.</p>
+            <p className="text-slate-400 text-sm mt-1">Elige con quién quieres atenderte.</p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {barberos.map((b) => {
-              const selected = selectedBarbero?.id === b.id;
-              return (
-                <div
-                  key={b.id}
-                  onClick={() => setSelectedBarbero(b)}
-                  className={`p-5 rounded-2xl border cursor-pointer transition text-center flex flex-col justify-between ${
-                    selected
-                      ? 'bg-amber-500/10 border-amber-500 shadow-lg shadow-amber-500/10'
-                      : 'bg-slate-900 border-slate-800 hover:border-slate-700'
-                  }`}
-                >
-                  <div>
-                    <div className="w-16 h-16 rounded-2xl bg-slate-800 border border-slate-700 mx-auto flex items-center justify-center text-amber-400 font-bold text-xl mb-3">
-                      {b.nombre[0]}
+          {barberos.length === 0 ? (
+            <div className="py-12 text-center text-slate-500 text-sm">No hay barberos disponibles por el momento.</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {barberos.map((b) => {
+                const selected = selectedBarbero?.id === b.id;
+                return (
+                  <button
+                    type="button"
+                    key={b.id}
+                    onClick={() => {
+                      setSelectedBarbero(b);
+                      setErrorMessage('');
+                    }}
+                    aria-pressed={selected}
+                    className={`p-5 rounded-2xl border cursor-pointer transition text-center flex flex-col justify-between ${
+                      selected
+                        ? 'bg-amber-500/10 border-amber-500 shadow-lg shadow-amber-500/10'
+                        : 'bg-slate-900 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div>
+                      {b.foto_url ? (
+                        <img
+                          src={b.foto_url}
+                          alt={b.nombre}
+                          className="w-16 h-16 rounded-2xl object-cover border border-slate-700 mx-auto mb-3"
+                        />
+                      ) : (
+                        <div className="w-16 h-16 rounded-2xl bg-slate-800 border border-slate-700 mx-auto flex items-center justify-center text-amber-400 font-bold text-xl mb-3">
+                          {b.nombre[0]}
+                        </div>
+                      )}
+                      <h3 className="font-bold text-base text-white">{b.nombre}</h3>
                     </div>
-                    <h3 className="font-bold text-base text-white">{b.nombre}</h3>
-                    <p className="text-xs text-amber-400/90 mt-1 font-medium">{b.especialidad}</p>
-                  </div>
-                  <div className="mt-4 pt-3 border-t border-slate-800">
-                    <span className={`text-xs font-semibold ${selected ? 'text-amber-400' : 'text-slate-500'}`}>
-                      {selected ? 'Seleccionado ✓' : 'Seleccionar'}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                    <div className="mt-4 pt-3 border-t border-slate-800 w-full">
+                      <span className={`text-xs font-semibold ${selected ? 'text-amber-400' : 'text-slate-500'}`}>
+                        {selected ? 'Seleccionado ✓' : 'Seleccionar'}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <div className="mt-8 flex justify-between">
             <button
@@ -263,56 +381,97 @@ export default function BookingWizard({ onBookingSuccess }) {
         </div>
       )}
 
-      {/* ================= PASO 3: FECHA Y SLOTS ================= */}
+      {/* ================= PASO 3: FECHA, FRANJA Y HORARIOS ================= */}
       {step === 3 && (
         <div>
           <div className="text-center mb-6">
             <h2 className="text-2xl font-bold text-white">Fecha y Horario</h2>
-            <p className="text-slate-400 text-sm mt-1">Los turnos se calculan en vivo según la duración del servicio ({selectedServicio?.duracion_minutos} min).</p>
+            <p className="text-slate-400 text-sm mt-1">
+              Los horarios se consultan en vivo según la duración total de tus servicios ({duracionTotal} min) y se
+              ofrecen cada {INTERVALO_MINUTOS} minutos.
+            </p>
           </div>
 
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 mb-6">
-            <label className="block text-xs uppercase tracking-wider text-slate-400 font-semibold mb-2">
-              Seleccionar Fecha
-            </label>
-            <input
-              type="date"
-              value={selectedDate}
-              min={new Date().toISOString().split('T')[0]}
-              onChange={(e) => setSelectedDate(e.target.value)}
-              className="w-full sm:w-64 px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:border-amber-500 focus:outline-none"
-            />
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 mb-6 grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div>
+              <label htmlFor="cita-fecha" className="block text-xs uppercase tracking-wider text-slate-400 font-semibold mb-2">
+                Seleccionar Fecha
+              </label>
+              <input
+                id="cita-fecha"
+                type="date"
+                value={selectedDate}
+                min={hoyColombia()}
+                onChange={(e) => cambiarFecha(e.target.value)}
+                className="w-full sm:w-64 px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+            <div>
+              <span className="block text-xs uppercase tracking-wider text-slate-400 font-semibold mb-2">
+                Franja del Día
+              </span>
+              <div className="flex gap-2" role="group" aria-label="Franja del día">
+                {FRANJAS.map((f) => (
+                  <button
+                    type="button"
+                    key={f}
+                    onClick={() => setFranja(f)}
+                    aria-pressed={franja === f}
+                    className={`flex-1 px-4 py-2.5 rounded-xl border text-sm font-medium transition ${
+                      franja === f
+                        ? 'bg-amber-500 text-slate-950 font-bold border-amber-500 shadow-md shadow-amber-500/20'
+                        : 'bg-slate-950 border-slate-800 text-slate-200 hover:border-slate-700'
+                    }`}
+                  >
+                    {f}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
             <h3 className="font-semibold text-sm text-slate-300 mb-4 flex items-center gap-2">
               <Clock className="w-4 h-4 text-amber-400" />
-              Turnos Disponibles para el {selectedDate}:
+              Turnos Disponibles con {selectedBarbero?.nombre} el {formatearFecha(selectedDate)}
+              {franja ? ` (${franja}):` : ':'}
             </h3>
 
-            {loadingSlots ? (
+            {errorSlots && <Alerta tipo="error" className="mb-4">{errorSlots}</Alerta>}
+
+            {!franja ? (
+              <div className="py-8 text-center text-slate-500 text-sm">
+                Elige una franja del día para ver los horarios disponibles.
+              </div>
+            ) : loadingSlots ? (
               <div className="py-8 text-center text-slate-400 text-sm">Consultando disponibilidad en tiempo real...</div>
-            ) : slots.length === 0 ? (
-              <div className="py-8 text-center text-slate-500 text-sm">No hay horarios disponibles para esta fecha.</div>
+            ) : horariosLibres.length === 0 ? (
+              !errorSlots && (
+                <div className="py-8 text-center text-slate-500 text-sm">
+                  No hay horarios disponibles para esta fecha y franja. Prueba con otra franja u otro día.
+                </div>
+              )
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
-                {slots.map((s, idx) => {
+                {horariosLibres.map((s) => {
                   const isSelected = selectedSlot?.hora_inicio === s.hora_inicio;
                   return (
                     <button
-                      key={idx}
-                      disabled={!s.disponible}
-                      onClick={() => setSelectedSlot(s)}
+                      type="button"
+                      key={s.hora_inicio}
+                      onClick={() => {
+                        setSelectedSlot(s);
+                        setErrorMessage('');
+                      }}
+                      aria-pressed={isSelected}
                       className={`p-3 rounded-xl border text-center transition flex flex-col items-center justify-center ${
-                        !s.disponible
-                          ? 'bg-slate-950/40 border-slate-900 text-slate-600 cursor-not-allowed line-through'
-                          : isSelected
+                        isSelected
                           ? 'bg-amber-500 text-slate-950 font-bold border-amber-500 shadow-md shadow-amber-500/20'
                           : 'bg-slate-950 border-slate-800 text-slate-200 hover:border-slate-700'
                       }`}
                     >
-                      <span className="text-sm font-semibold">{s.hora_inicio}</span>
-                      <span className="text-[10px] opacity-70">a {s.hora_fin}</span>
+                      <span className="text-sm font-semibold">{formatearHora(s.hora_inicio)}</span>
+                      <span className="text-[10px] opacity-70">a {formatearHora(s.hora_fin)}</span>
                     </button>
                   );
                 })}
@@ -332,18 +491,18 @@ export default function BookingWizard({ onBookingSuccess }) {
               onClick={() => setStep(4)}
               className="px-6 py-3 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:hover:bg-amber-500 text-slate-950 font-bold rounded-xl transition flex items-center gap-2"
             >
-              Siguiente: Datos de Contacto <ArrowRight className="w-4 h-4" />
+              Siguiente: Confirmar <ArrowRight className="w-4 h-4" />
             </button>
           </div>
         </div>
       )}
 
-      {/* ================= PASO 4: FORMULARIO Y CONFIRMACIÓN ================= */}
+      {/* ================= PASO 4: CONFIRMACIÓN ================= */}
       {step === 4 && (
         <div>
           <div className="text-center mb-6">
             <h2 className="text-2xl font-bold text-white">Confirmar Reserva</h2>
-            <p className="text-slate-400 text-sm mt-1">Ingresa tus datos para generar el código de tu cita.</p>
+            <p className="text-slate-400 text-sm mt-1">Revisa el resumen y confirma tu cita.</p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -354,8 +513,15 @@ export default function BookingWizard({ onBookingSuccess }) {
               </h3>
               <div className="space-y-3 text-xs">
                 <div>
-                  <span className="text-slate-400">Servicio:</span>
-                  <p className="font-semibold text-white text-sm mt-0.5">{selectedServicio?.nombre}</p>
+                  <span className="text-slate-400">Servicios:</span>
+                  <ul className="mt-0.5 space-y-1">
+                    {(resumen?.servicios || []).map((s) => (
+                      <li key={s.id} className="flex justify-between gap-2 text-white text-sm font-semibold">
+                        <span>{s.nombre}</span>
+                        <span className="text-slate-300 font-normal">{formatearPrecio(s.precio)}</span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
                 <div>
                   <span className="text-slate-400">Barbero:</span>
@@ -364,72 +530,48 @@ export default function BookingWizard({ onBookingSuccess }) {
                 <div>
                   <span className="text-slate-400">Fecha y Hora:</span>
                   <p className="font-semibold text-amber-400 text-sm mt-0.5">
-                    {selectedDate} ({selectedSlot?.hora_inicio} — {selectedSlot?.hora_fin})
+                    {formatearFecha(selectedDate)} ({formatearHora(selectedSlot?.hora_inicio)} — {formatearHora(selectedSlot?.hora_fin)})
                   </p>
+                </div>
+                <div>
+                  <span className="text-slate-400">Duración total:</span>
+                  <p className="font-semibold text-white text-sm mt-0.5">{duracionTotal} minutos</p>
                 </div>
                 <div className="pt-3 border-t border-slate-800 flex justify-between items-center text-sm">
                   <span className="text-slate-400">Total a Pagar:</span>
-                  <span className="font-bold text-lg text-emerald-400">${Number(selectedServicio?.precio).toFixed(2)}</span>
+                  <span className="font-bold text-lg text-emerald-400">{formatearPrecio(resumen?.total)}</span>
                 </div>
               </div>
             </div>
 
-            {/* Formulario del Cliente */}
+            {/* Confirmación */}
             <form onSubmit={handleSubmit} className="md:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                  Nombre Completo *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ej: Carlos Mendoza"
-                  value={cliente.nombre}
-                  onChange={(e) => setCliente({ ...cliente, nombre: e.target.value })}
-                  className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-600 focus:border-amber-500 focus:outline-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                    Teléfono Móvil *
-                  </label>
-                  <input
-                    type="tel"
-                    required
-                    placeholder="3001234567"
-                    value={cliente.telefono}
-                    onChange={(e) => setCliente({ ...cliente, telefono: e.target.value })}
-                    className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-600 focus:border-amber-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                    Correo Electrónico (Opcional)
-                  </label>
-                  <input
-                    type="email"
-                    placeholder="carlos@example.com"
-                    value={cliente.email}
-                    onChange={(e) => setCliente({ ...cliente, email: e.target.value })}
-                    className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-600 focus:border-amber-500 focus:outline-none"
-                  />
-                </div>
+              <div className="text-sm text-slate-300 bg-slate-950/60 border border-slate-800 rounded-xl p-3">
+                Reservando como <strong className="text-white">{usuario?.nombre}</strong>
+                <span className="text-slate-400"> ({usuario?.email})</span>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                  Notas o Preferencias Especiales
+                <label htmlFor="cita-notas" className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+                  Notas o Preferencias Especiales (opcional)
                 </label>
                 <textarea
+                  id="cita-notas"
                   rows={2}
+                  maxLength={500}
                   placeholder="Ej: Degradado bajo con navaja, poco corte arriba..."
-                  value={cliente.notas}
-                  onChange={(e) => setCliente({ ...cliente, notas: e.target.value })}
+                  value={notas}
+                  onChange={(e) => setNotas(e.target.value)}
                   className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-600 focus:border-amber-500 focus:outline-none text-sm"
                 />
               </div>
+
+              <ul className="text-xs text-slate-400 space-y-1 list-disc pl-5">
+                <li>{TEXTOS_POLITICAS.anticipacion}</li>
+                <li>{TEXTOS_POLITICAS.reprogramacion}</li>
+                <li>{TEXTOS_POLITICAS.limite}</li>
+                <li>{TEXTOS_POLITICAS.pago}</li>
+              </ul>
 
               <div className="pt-4 flex justify-between items-center">
                 <button
