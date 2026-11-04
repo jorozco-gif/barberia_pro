@@ -1,6 +1,7 @@
 """RF-13 a RF-21 (agendamiento), RNF-05, RNF-07 y RNF-08."""
 import datetime
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
@@ -328,6 +329,25 @@ def test_cp_rf20_12_el_contador_de_choques_funciona_con_varios_clientes_en_secue
         crear_cliente(db, email, f"Cliente {i}")
         resultados.append(agendar(client, iniciar_sesion(client, email), barbero, corte, reloj.en(1), "10:00").status_code)
     assert resultados == [201, 409, 409, 409]
+    assert db.query(models.Cita).count() == 1
+
+
+def test_cp_rf20_13_solicitudes_simultaneas_sobre_el_mismo_horario(client, db, reloj, barbero, corte):
+    """CA-20.2 con peticiones realmente concurrentes: solo una puede quedarse con el horario."""
+    cabeceras = []
+    for i in range(6):
+        email = f"simultaneo{i}@test.com"
+        crear_cliente(db, email, f"Simultáneo {i}")
+        cabeceras.append(iniciar_sesion(client, email))
+    salida = threading.Barrier(len(cabeceras))
+
+    def reservar(h):
+        salida.wait()
+        return agendar(TestClient(app), h, barbero, corte, reloj.en(1), "10:00").status_code
+
+    with ThreadPoolExecutor(max_workers=len(cabeceras)) as pool:
+        codigos = sorted(pool.map(reservar, cabeceras))
+    assert codigos == [201, 409, 409, 409, 409, 409]
     assert db.query(models.Cita).count() == 1
 
 
