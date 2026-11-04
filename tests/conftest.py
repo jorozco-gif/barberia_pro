@@ -32,6 +32,8 @@ from main import app  # noqa: E402
 
 import helpers  # noqa: E402
 
+ENVIAR_REAL = notificaciones.enviar  # la función de envío sin sustituir, para probarla por separado
+
 # Argon2 con parámetros mínimos solo para que las pruebas sean rápidas. Los hashes que genera siguen siendo
 # Argon2id y se verifican igual; en producción se usan los parámetros por defecto de security.py.
 security._hasher = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1)

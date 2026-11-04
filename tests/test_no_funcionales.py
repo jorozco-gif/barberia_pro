@@ -2,6 +2,7 @@
 datos iniciales (PN-13) y arranque de la aplicación."""
 import ast
 import datetime
+import logging
 import os
 import subprocess
 
@@ -10,10 +11,11 @@ from sqlalchemy.exc import IntegrityError
 
 import database
 import models
+import notificaciones
 import politicas
 import security
 import seed
-from conftest import BACKEND_DIR
+from conftest import BACKEND_DIR, ENVIAR_REAL
 from helpers import CLAVE, crear_cita
 
 RAIZ = os.path.abspath(os.path.join(BACKEND_DIR, "..", ".."))
@@ -156,6 +158,59 @@ def test_seed_rechaza_contrasenas_cortas(monkeypatch):
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", "corta")
     with pytest.raises(SystemExit):
         seed.poblar_datos_iniciales()
+
+
+# ---------- Envío de correo (RF-04, RF-07, RF-21, RF-25) ----------
+def test_enviar_sin_smtp_registra_el_correo_y_no_falla(monkeypatch, caplog):
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    with caplog.at_level(logging.WARNING, logger="barberia.notificaciones"):
+        ENVIAR_REAL("ana@test.com", "Asunto de prueba", "Cuerpo de prueba")
+    assert "Correo no enviado" in caplog.text and "ana@test.com" in caplog.text
+
+
+def test_enviar_con_smtp_arma_y_entrega_el_mensaje(monkeypatch):
+    registro = {}
+
+    class SMTPFalso:
+        def __init__(self, host, puerto, timeout):
+            registro["conexion"] = (host, puerto, timeout)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def starttls(self):
+            registro["tls"] = True
+
+        def login(self, usuario, password):
+            registro["login"] = (usuario, password)
+
+        def send_message(self, mensaje):
+            registro["mensaje"] = mensaje
+
+    monkeypatch.setattr(notificaciones.smtplib, "SMTP", SMTPFalso)
+    for variable, valor in (("SMTP_HOST", "smtp.test"), ("SMTP_PORT", "587"), ("SMTP_USER", "usuario"),
+                            ("SMTP_PASSWORD", "secreto"), ("SMTP_FROM", "citas@barbershop.test")):
+        monkeypatch.setenv(variable, valor)
+    ENVIAR_REAL("ana@test.com", "Asunto de prueba", "Cuerpo de prueba")
+    assert registro["conexion"] == ("smtp.test", 587, 10) and registro["tls"] is True
+    assert registro["login"] == ("usuario", "secreto")
+    mensaje = registro["mensaje"]
+    assert (mensaje["To"], mensaje["From"], mensaje["Subject"]) == ("ana@test.com", "citas@barbershop.test", "Asunto de prueba")
+    assert mensaje.get_content().strip() == "Cuerpo de prueba"
+
+
+def test_un_fallo_del_servidor_de_correo_no_se_propaga(monkeypatch, caplog):
+    def sin_conexion(*args, **kwargs):
+        raise OSError("sin red")
+
+    monkeypatch.setattr(notificaciones.smtplib, "SMTP", sin_conexion)
+    monkeypatch.setenv("SMTP_HOST", "smtp.test")
+    with caplog.at_level(logging.ERROR, logger="barberia.notificaciones"):
+        ENVIAR_REAL("ana@test.com", "Asunto de prueba", "Cuerpo de prueba")  # no debe lanzar excepción
+    assert "No se pudo enviar el correo" in caplog.text
 
 
 # ---------- Políticas y aplicación ----------
