@@ -166,7 +166,8 @@ def test_enviar_sin_smtp_registra_el_correo_y_no_falla(monkeypatch, caplog):
     monkeypatch.delenv("SMTP_HOST", raising=False)
     with caplog.at_level(logging.WARNING, logger="barberia.notificaciones"):
         ENVIAR_REAL("ana@test.com", "Asunto de prueba", "Cuerpo de prueba")
-    assert "Correo no enviado" in caplog.text and "ana@test.com" in caplog.text
+    assert "Correo no enviado" in caplog.text and "an***@test.com" in caplog.text
+    assert "Cuerpo de prueba" not in caplog.text  # el contenido puede llevar enlaces privados
 
 
 def test_enviar_con_smtp_arma_y_entrega_el_mensaje(monkeypatch):

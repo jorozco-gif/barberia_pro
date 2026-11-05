@@ -29,7 +29,6 @@ from helpers import CLAVE, agendar, crear_cita
 
 ENVIAR = notificaciones.enviar  # la función real; el fixture autouse `correos` la sustituye en cada prueba
 
-VARIABLES_SMTP = ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM_EMAIL", "SMTP_FROM_NAME", "SMTP_FROM")
 CUENTA = "remitente@gmail.test"
 CLAVE_DE_APLICACION = "abcd efgh ijkl mnop"  # inventada, con el formato en que Google muestra las contraseñas de aplicación
 
@@ -50,6 +49,7 @@ class RegistroSMTP:
         self.error_login = None
         self.error_envio = None
         self.espera = None     # threading.Event: el envío no termina hasta que se active
+        self.respuesta_data = (250, b"2.0.0 OK  1730000000 a1b2c3 - gsmtp")  # como responde Gmail al mensaje
 
 
 @pytest.fixture
@@ -77,12 +77,18 @@ def smtp(monkeypatch):
             if registro.error_login:
                 raise registro.error_login
             registro.logins.append((usuario, password))
+            return (235, b"2.7.0 Accepted")
+
+        def data(self, mensaje):
+            return registro.respuesta_data
 
         def send_message(self, mensaje):
+            # Como smtplib: send_message -> sendmail -> data(); si data no responde 250, lanza SMTPDataError.
             if registro.espera is not None:
                 registro.espera.wait(10)
             if registro.error_envio:
                 raise registro.error_envio
+            self.data(mensaje.as_bytes())
             registro.mensajes.append(mensaje)
 
     class SMTPFalsoSSL(SMTPFalso):
@@ -93,17 +99,7 @@ def smtp(monkeypatch):
     return registro
 
 
-@pytest.fixture(autouse=True)
-def entorno_limpio(monkeypatch):
-    """Un .env real del programador no debe influir en estas pruebas ni abrir conexiones."""
-    for variable in VARIABLES_SMTP:
-        monkeypatch.delenv(variable, raising=False)
-
-    def sin_red(*args, **kwargs):
-        raise AssertionError("Las pruebas no deben abrir conexiones SMTP reales.")
-
-    monkeypatch.setattr(notificaciones.smtplib, "SMTP", sin_red)
-    monkeypatch.setattr(notificaciones.smtplib, "SMTP_SSL", sin_red)
+# El aislamiento del .env real y el bloqueo de conexiones están en conftest.py (fixture autouse `sin_smtp_real`).
 
 
 def configurar(monkeypatch, **variables):
@@ -286,10 +282,13 @@ def test_sin_usuario_no_se_autentica(smtp, monkeypatch):
     assert smtp.logins == [] and len(smtp.mensajes) == 1
 
 
-def test_sin_smtp_host_solo_se_registra_el_correo(smtp, caplog):
+def test_sin_smtp_host_solo_se_registra_que_no_se_envio_sin_el_contenido(smtp, caplog):
+    """El contenido puede llevar el enlace de recuperación con su token: no se escribe en el registro."""
     with caplog.at_level(logging.WARNING, logger="barberia.notificaciones"):
-        assert notificaciones.entregar("ana@test.com", "Asunto", "Texto del correo") is False
-    assert "Correo no enviado" in caplog.text and "Texto del correo" in caplog.text
+        assert notificaciones.entregar("ana@test.com", "Asunto", "Enlace: http://x/restablecer?token=SECRETO") is False
+    assert "Correo no enviado «Asunto» para an***@test.com" in caplog.text
+    assert "reinicia el backend" in caplog.text  # el .env solo se lee al arrancar
+    assert "SECRETO" not in caplog.text and "ana@test.com" not in caplog.text
     assert smtp.conexiones == []
 
 
@@ -322,9 +321,59 @@ def test_los_errores_de_smtp_se_registran_con_su_causa_y_no_se_propagan(gmail, c
     setattr(gmail, paso, error)
     with caplog.at_level(logging.ERROR, logger="barberia.notificaciones"):
         assert notificaciones.entregar("ana@test.com", "Asunto", "Texto") is False  # no lanza excepción
-    assert "No se pudo enviar el correo 'Asunto' a ana@test.com" in caplog.text
+    assert "No se pudo enviar el correo «Asunto» a an***@test.com" in caplog.text
+    etapa = {"error_conexion": "conexión", "error_starttls": "cifrado", "error_login": "autenticación", "error_envio": "envío"}[paso]
+    assert f"Falló en la etapa: {etapa} ({type(error).__name__}" in caplog.text
     assert pista in caplog.text
+    assert "ana@test.com" not in caplog.text
     assert gmail.mensajes == []
+
+
+def test_el_registro_muestra_cada_etapa_y_la_respuesta_del_servidor_al_aceptar(gmail, caplog):
+    with caplog.at_level(logging.INFO, logger="barberia.notificaciones"):
+        assert notificaciones.entregar("ana@test.com", "Asunto", "Texto") is True
+    # Solo las líneas de este hilo: un envío en segundo plano de otra prueba podría escribir a la vez.
+    lineas = [r.getMessage() for r in caplog.records if r.thread == threading.get_ident()]
+    etapas = ["Conectando con smtp.gmail.com:587 (STARTTLS)", "Conexión cifrada", "certificado de smtp.gmail.com verificado",
+              f"Autenticación aceptada para {CUENTA} (235 2.7.0 Accepted)", "ACEPTADO por smtp.gmail.com"]
+    posiciones = [next(i for i, l in enumerate(lineas) if e in l) for e in etapas]
+    assert posiciones == sorted(posiciones)
+    assert "Respuesta del servidor: 250 2.0.0 OK 1730000000 a1b2c3 - gsmtp" in lineas[-1]
+    numero = lineas[0].split(":")[0]
+    assert numero.startswith("Correo #") and all(l.startswith(numero + ":") for l in lineas)
+
+
+def test_el_error_de_autenticacion_muestra_la_respuesta_del_servidor_sin_credenciales(monkeypatch, gmail, caplog):
+    # Un servidor que repitiera la contraseña en su respuesta no debe hacer que llegue al registro.
+    gmail.error_login = smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted abcdefghijklmnop")
+    with caplog.at_level(logging.INFO, logger="barberia.notificaciones"):
+        assert notificaciones.entregar("ana@test.com", "Asunto", "Texto") is False
+    assert "Conexión cifrada" in caplog.text and "Autenticación aceptada" not in caplog.text
+    assert "respuesta del servidor: 535 5.7.8 Username and Password not accepted ****" in caplog.text
+    assert "abcdefghijklmnop" not in caplog.text and "ACEPTADO" not in caplog.text
+
+
+def test_si_el_servidor_rechaza_el_mensaje_no_se_da_por_aceptado(gmail, caplog):
+    gmail.error_envio = smtplib.SMTPDataError(554, b"5.7.0 Message rejected")
+    with caplog.at_level(logging.INFO, logger="barberia.notificaciones"):
+        assert notificaciones.entregar("ana@test.com", "Asunto", "Texto") is False
+    assert "Autenticación aceptada" in caplog.text and "ACEPTADO" not in caplog.text
+    assert "Falló en la etapa: envío (SMTPDataError; respuesta del servidor: 554 5.7.0 Message rejected)" in caplog.text
+
+
+@pytest.mark.parametrize("codigo, texto, pista", [
+    (534, b"5.7.9 Application-specific password required", "contraseña normal"),
+    (535, b"5.7.8 Username and Password not accepted", "misma cuenta"),
+])
+def test_explicacion_de_los_rechazos_de_autenticacion_de_gmail(codigo, texto, pista):
+    explicacion = notificaciones.explicar_error(smtplib.SMTPAuthenticationError(codigo, texto))
+    assert pista in explicacion and "contraseña de aplicación" in explicacion
+
+
+def test_un_correo_tiene_un_solo_destinatario():
+    for destino in ("a@test.com,b@test.com", "a@test.com;b@test.com", "a@test.com b@test.com", "Ana <a@test.com>", "sin-arroba"):
+        with pytest.raises(ValueError):
+            notificaciones.construir_mensaje(config_de_prueba(), destino, "Asunto", "Texto")
 
 
 def test_ni_los_registros_ni_los_errores_ni_el_mensaje_exponen_la_contrasena(monkeypatch, smtp, caplog):
@@ -334,6 +383,8 @@ def test_ni_los_registros_ni_los_errores_ni_el_mensaje_exponen_la_contrasena(mon
     with caplog.at_level(logging.DEBUG):
         assert notificaciones.entregar("ana@test.com", "Asunto", "Texto") is False
     assert secreto not in caplog.text
+    import base64
+    assert base64.b64encode(f"\0{CUENTA}\0{secreto}".encode()).decode() not in caplog.text  # AUTH PLAIN
     assert secreto not in notificaciones.explicar_error(smtp.error_login)
     smtp.error_login = None
     assert notificaciones.entregar("ana@test.com", "Asunto", "Texto", "<p>HTML</p>") is True
@@ -354,6 +405,37 @@ def test_enviar_no_hace_esperar_a_quien_llama(gmail):
         gmail.espera.set()
     assert futuro.result(timeout=5) is True
     assert len(gmail.mensajes) == 1
+
+
+def test_enviar_registra_la_cola_y_el_resultado_con_el_mismo_numero(gmail, caplog):
+    with caplog.at_level(logging.INFO, logger="barberia.notificaciones"):
+        assert ENVIAR("ana@test.com", "Asunto", "Texto").result(timeout=5) is True
+    lineas = [r.getMessage() for r in caplog.records]
+    en_cola = [l for l in lineas if "en cola «Asunto» para an***@test.com" in l]
+    assert len(en_cola) == 1
+    numero = en_cola[0].split(":")[0]
+    propias = [l for l in lineas if l.startswith(numero + ":")]
+    assert propias[0] == en_cola[0] and propias[-1].startswith(numero + ": ACEPTADO")
+
+
+def test_una_excepcion_escapada_del_hilo_de_envio_queda_registrada(caplog):
+    futuro = Future()
+    futuro.set_exception(RuntimeError("fallo imprevisto"))
+    with caplog.at_level(logging.ERROR, logger="barberia.notificaciones"):
+        notificaciones._avisar_si_el_hilo_fallo(futuro)
+    assert "error inesperado" in caplog.text and "fallo imprevisto" in caplog.text
+
+
+def test_la_consola_del_backend_muestra_el_registro_solo_si_nadie_lo_configuro(monkeypatch):
+    """uvicorn no configura el registro raíz: sin este manejador no se vería que un correo fue ACEPTADO."""
+    manejadores = [h for h in notificaciones.logger.handlers
+                   if any(isinstance(f, notificaciones._SoloSinOtroRegistro) for f in h.filters)]
+    assert len(manejadores) == 1 and notificaciones.logger.propagate is True
+    registro = logging.makeLogRecord({"name": "barberia.notificaciones", "levelno": logging.INFO, "msg": "x"})
+    monkeypatch.setattr(logging.getLogger(), "handlers", [])
+    assert manejadores[0].filter(registro)
+    monkeypatch.setattr(logging.getLogger(), "handlers", [logging.NullHandler()])
+    assert not manejadores[0].filter(registro)  # con registro configurado (p. ej. pytest) no se duplica
 
 
 def test_un_fallo_en_segundo_plano_se_registra_y_no_lanza(gmail, caplog):
@@ -650,14 +732,23 @@ def test_solicitar_la_recuperacion_no_espera_al_servidor_de_correo(client, gmail
 @pytest.fixture
 def consola(monkeypatch):
     """La consola carga el .env del proyecto; en las pruebas no debe leer el del programador."""
-    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: False)
+    cargados = []
+    monkeypatch.setattr("dotenv.find_dotenv", lambda *args, **kwargs: "")
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: cargados.append(args) or False)
+    return cargados
 
 
 def test_consola_envia_el_correo_de_prueba_y_no_imprime_la_contrasena(gmail, consola, capsys):
     assert notificaciones._probar_desde_consola(["destino@test.com"]) == 0
     salida = capsys.readouterr().out
-    assert "smtp.gmail.com:587" in salida and "ENVIADO" in salida and "destino@test.com" in salida
+    assert "Se enviará UN correo de prueba, solo a: destino@test.com" in salida
+    assert "smtp.gmail.com:587" in salida and f"Autenticación aceptada para {CUENTA}" in salida
+    assert "ACEPTADO" in salida and "Respuesta del servidor: 250 2.0.0 OK 1730000000 a1b2c3 - gsmtp" in salida
     assert "abcdefghijklmnop" not in salida and CLAVE_DE_APLICACION not in salida
+    assert "SMTP_PASSWORD    definida (16 letras: formato de contraseña de aplicación)" in salida
+    id_mensaje = gmail.mensajes[0]["Message-ID"].strip("<>")
+    assert f"in:anywhere rfc822msgid:{id_mensaje}" in salida
+    assert len(gmail.mensajes) == 1 and gmail.mensajes[0]["Cc"] is None and gmail.mensajes[0]["Bcc"] is None
     m = mensaje_recibido(gmail.mensajes[0])
     assert m["Subject"] == "Prueba de correo - BarberShop Pro" and m["To"].addresses[0].addr_spec == "destino@test.com"
     assert "hora de Colombia" in cuerpo_de(m, "plain")
@@ -667,8 +758,38 @@ def test_consola_explica_los_errores_de_autenticacion(gmail, consola, capsys):
     gmail.error_login = smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted")
     assert notificaciones._probar_desde_consola(["destino@test.com"]) == 1
     salida = capsys.readouterr().out
-    assert "FALLÓ (SMTPAuthenticationError)" in salida and "contraseña de aplicación" in salida
-    assert "abcdefghijklmnop" not in salida
+    assert "FALLÓ en la etapa: autenticación (SMTPAuthenticationError)" in salida and "contraseña de aplicación" in salida
+    assert "Respuesta del servidor: 535 5.7.8 Username and Password not accepted" in salida
+    assert "ACEPTADO" not in salida and "abcdefghijklmnop" not in salida
+
+
+def test_consola_indica_que_env_lee_y_que_variables_del_sistema_tienen_prioridad(gmail, consola, capsys, monkeypatch):
+    monkeypatch.setattr("dotenv.find_dotenv", lambda *args, **kwargs: "/proyecto/src/backend/.env")
+    assert notificaciones._probar_desde_consola(["destino@test.com"]) == 0
+    salida = capsys.readouterr().out
+    assert "Archivo .env leído: /proyecto/src/backend/.env" in salida
+    assert consola == [("/proyecto/src/backend/.env",)]
+    # gmail define las variables en el entorno antes de cargar el .env: son las que usaría el backend
+    assert "SMTP_HOST ya está definida en las variables de entorno del sistema" in salida
+
+
+def test_consola_avisa_si_no_hay_env_o_si_windows_lo_guardo_como_env_txt(smtp, consola, capsys, monkeypatch):
+    monkeypatch.setattr(notificaciones.os.path, "exists", lambda ruta: ruta.endswith(".env.txt"))
+    assert notificaciones._probar_desde_consola(["destino@test.com"]) == 2
+    salida = capsys.readouterr().out
+    assert "No se encontró ningún archivo .env" in salida and ".env.txt" in salida
+
+
+def test_consola_avisa_si_la_contrasena_no_parece_de_aplicacion_sin_mostrarla(gmail, consola, capsys, monkeypatch):
+    configurar(monkeypatch, SMTP_PASSWORD="MiClaveNormal.2026")
+    notificaciones._probar_desde_consola(["destino@test.com"])
+    salida = capsys.readouterr().out
+    assert "NO tiene el formato de una contraseña de aplicación" in salida and "MiClaveNormal" not in salida
+
+
+def test_consola_recuerda_que_un_correo_a_si_mismo_puede_quedar_solo_en_enviados(gmail, consola, capsys):
+    assert notificaciones._probar_desde_consola([CUENTA]) == 0
+    assert "solo en Enviados" in capsys.readouterr().out
 
 
 def test_consola_avisa_si_gmail_va_a_cambiar_el_remitente(gmail, consola, capsys, monkeypatch):
@@ -677,10 +798,14 @@ def test_consola_avisa_si_gmail_va_a_cambiar_el_remitente(gmail, consola, capsys
     assert "Gmail reemplaza el remitente" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("argumentos, esperado", [([], "Uso:"), (["sin-arroba"], "Uso:"), (["a@test.com", "b@test.com"], "Uso:")])
-def test_consola_valida_los_argumentos(consola, capsys, argumentos, esperado):
+@pytest.mark.parametrize("argumentos", [
+    [], ["sin-arroba"], ["a@test.com", "b@test.com"], ["a@test.com,b@test.com"], ["a@test.com;b@test.com"],
+    ["a@test.com b@test.com"], ["Ana <a@test.com>"],
+])
+def test_consola_solo_acepta_una_direccion(gmail, consola, capsys, argumentos):
     assert notificaciones._probar_desde_consola(argumentos) == 2
-    assert esperado in capsys.readouterr().out
+    assert "Uso:" in capsys.readouterr().out
+    assert gmail.conexiones == [] and gmail.mensajes == []
 
 
 def test_consola_sin_smtp_host_o_con_configuracion_invalida_no_intenta_enviar(smtp, consola, capsys, monkeypatch):

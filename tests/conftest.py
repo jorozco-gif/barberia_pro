@@ -6,6 +6,8 @@
   y cada hilo vería su propia base de datos en memoria.
 - Reloj controlado: todas las reglas de tiempo (12 horas, 15 minutos, 1 hora, 3 meses) usan services.ahora_colombia().
 - Correo: no se envía; los mensajes se guardan en la lista del fixture `correos`.
+- Aislamiento del .env: database.py carga src/backend/.env al importarse. Si el programador tiene ahí su
+  configuración SMTP real, ninguna prueba debe verla ni poder abrir una conexión SMTP (fixture `sin_smtp_real`).
 """
 import datetime
 import os
@@ -61,6 +63,23 @@ def reloj(monkeypatch):
     r = Reloj()
     monkeypatch.setattr(services, "ahora_colombia", lambda: r.ahora)
     return r
+
+
+VARIABLES_SMTP = ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM_EMAIL", "SMTP_FROM_NAME", "SMTP_FROM")
+
+
+@pytest.fixture(autouse=True)
+def sin_smtp_real(monkeypatch):
+    """Ninguna prueba usa la configuración SMTP del .env real ni abre conexiones: las pruebas que necesitan un
+    servidor sustituyen smtplib por un doble y definen sus propias variables, inventadas."""
+    for variable in VARIABLES_SMTP:
+        monkeypatch.delenv(variable, raising=False)
+
+    def sin_red(*args, **kwargs):
+        raise AssertionError("Las pruebas no deben abrir conexiones SMTP reales.")
+
+    monkeypatch.setattr(notificaciones.smtplib, "SMTP", sin_red)
+    monkeypatch.setattr(notificaciones.smtplib, "SMTP_SSL", sin_red)
 
 
 @pytest.fixture(autouse=True)
