@@ -45,6 +45,7 @@ class Usuario(Base):
     tokens_recuperacion = relationship(
         "TokenRecuperacion", back_populates="usuario", cascade="all, delete-orphan"
     )
+    sesiones = relationship("Sesion", back_populates="usuario", cascade="all, delete-orphan")
 
 
 class Barbero(Base):
@@ -184,3 +185,20 @@ class TokenRecuperacion(Base):
     usado = Column(Boolean, default=False, nullable=False)
 
     usuario = relationship("Usuario", back_populates="tokens_recuperacion")
+
+
+class Sesion(Base):
+    """Sesión abierta de un usuario (RF-02, RF-03, RNF-02). Se guarda solo el hash del token.
+    La sesión expira cuando pasan 15 minutos desde la última actividad (PN-07)."""
+
+    __tablename__ = "sesiones"
+
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(
+        Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)
+    creada_el = Column(DateTime, nullable=False)
+    ultima_actividad = Column(DateTime, nullable=False)
+
+    usuario = relationship("Usuario", back_populates="sesiones")
