@@ -1,28 +1,22 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ShieldCheck, Users, Scissors, Plus, Pencil, Trash2, Clock } from 'lucide-react';
+import { ShieldCheck, Users, Scissors, Plus, Pencil, Trash2, Clock, Sparkles } from 'lucide-react';
 import { api } from '../api';
 import { formatearPrecio } from '../formato';
 import Alerta from './Alerta';
-
-const CLASE_INPUT =
-  'w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-sm placeholder-slate-600 focus:border-amber-500 focus:outline-none';
-const CLASE_LABEL = 'block text-xs uppercase tracking-wider text-slate-400 font-semibold mb-1.5';
-const CLASE_BOTON_PRIMARIO =
-  'px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:hover:bg-amber-500 text-slate-950 font-bold text-sm rounded-xl transition flex items-center justify-center gap-2';
-const CLASE_BOTON_SECUNDARIO =
-  'px-4 py-2 border border-slate-700 hover:bg-slate-800 text-slate-300 text-sm rounded-xl transition';
-
-function Campo({ id, etiqueta, children }) {
-  return (
-    <div>
-      <label htmlFor={id} className={CLASE_LABEL}>{etiqueta}</label>
-      {children}
-    </div>
-  );
-}
+import {
+  CLASE_BOTON_EDITAR,
+  CLASE_BOTON_ELIMINAR,
+  CLASE_BOTON_PRIMARIO,
+  CLASE_BOTON_SECUNDARIO,
+  CLASE_INPUT,
+  Campo,
+  ConfirmarEliminacion,
+} from './admin/comunes';
+import PanelEstilos from './admin/PanelEstilos';
 
 // ---------------------------------------------------------------------------
-// Barberos: alta, modificación de perfil y baja lógica (RF-05, RF-06, RF-07)
+// Barberos: alta, modificación de perfil y baja lógica (RF-05, RF-06, RF-07).
+// v1.2 (RF-06): el administrador puede modificar los 4 campos del registro: nombre, correo, contraseña y foto.
 // ---------------------------------------------------------------------------
 const BARBERO_VACIO = { nombre: '', email: '', password: '', foto_url: '' };
 
@@ -33,7 +27,7 @@ function PanelBarberos() {
   const [mensaje, setMensaje] = useState('');
   const [nuevo, setNuevo] = useState(BARBERO_VACIO);
   const [creando, setCreando] = useState(false);
-  const [editando, setEditando] = useState(null); // { id, nombre, foto_url }
+  const [editando, setEditando] = useState(null); // { id, nombre, email, emailOriginal, password, foto_url }
   const [guardando, setGuardando] = useState(false);
   const [eliminandoId, setEliminandoId] = useState(null); // confirmación pendiente
   const [procesando, setProcesando] = useState(false);
@@ -79,16 +73,24 @@ function PanelBarberos() {
     setError('');
     setMensaje('');
     setGuardando(true);
+    // Solo se envían el correo y la contraseña si cambian: la contraseña vacía conserva la actual.
+    const datos = { nombre: editando.nombre.trim(), foto_url: editando.foto_url.trim() || null };
+    const email = editando.email.trim();
+    if (email.toLowerCase() !== editando.emailOriginal.toLowerCase()) datos.email = email;
+    if (editando.password) datos.password = editando.password;
     try {
-      await api.adminActualizarBarbero(editando.id, {
-        nombre: editando.nombre.trim(),
-        foto_url: editando.foto_url.trim() || null,
-      });
+      await api.adminActualizarBarbero(editando.id, datos);
       setEditando(null);
-      setMensaje('Perfil del barbero actualizado.');
+      setMensaje(
+        datos.password
+          ? 'Perfil del barbero actualizado. Se cerraron sus sesiones abiertas: debe ingresar con la nueva contraseña.'
+          : datos.email
+          ? 'Perfil del barbero actualizado. Desde ahora inicia sesión con el nuevo correo.'
+          : 'Perfil del barbero actualizado.',
+      );
       await cargar();
     } catch (err) {
-      setError(err.message); // en 422 el perfil conserva los datos anteriores (CA-06.2)
+      setError(err.message); // en 400 o 422 el perfil conserva los datos anteriores (CA-06.2, CA-06.3)
     } finally {
       setGuardando(false);
     }
@@ -150,12 +152,28 @@ function PanelBarberos() {
             <div key={b.id} className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
               {editando?.id === b.id ? (
                 <form onSubmit={guardar} className="space-y-4">
+                  <h4 className="font-bold text-sm text-slate-300">Editar a {b.nombre}</h4>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <Campo id={`edit-nombre-${b.id}`} etiqueta="Nombre">
-                      <input id={`edit-nombre-${b.id}`} required minLength={2} maxLength={120} value={editando.nombre} onChange={(e) => setEditando({ ...editando, nombre: e.target.value })} className={CLASE_INPUT} />
+                      <input id={`edit-nombre-${b.id}`} required minLength={2} maxLength={120} autoComplete="off" value={editando.nombre} onChange={(e) => setEditando({ ...editando, nombre: e.target.value })} className={CLASE_INPUT} />
                     </Campo>
-                    <Campo id={`edit-foto-${b.id}`} etiqueta="URL de la foto">
-                      <input id={`edit-foto-${b.id}`} type="url" maxLength={255} placeholder="https://..." value={editando.foto_url} onChange={(e) => setEditando({ ...editando, foto_url: e.target.value })} className={CLASE_INPUT} />
+                    <Campo id={`edit-email-${b.id}`} etiqueta="Correo electrónico">
+                      <input id={`edit-email-${b.id}`} type="email" required maxLength={255} autoComplete="off" value={editando.email} onChange={(e) => setEditando({ ...editando, email: e.target.value })} className={CLASE_INPUT} />
+                    </Campo>
+                    <Campo id={`edit-password-${b.id}`} etiqueta="Nueva contraseña (opcional)" ayuda="Si la cambias, se cierran las sesiones abiertas del barbero.">
+                      <input id={`edit-password-${b.id}`} type="password" minLength={8} maxLength={128} autoComplete="new-password" placeholder="Déjala vacía para no cambiarla" value={editando.password} onChange={(e) => setEditando({ ...editando, password: e.target.value })} className={CLASE_INPUT} />
+                    </Campo>
+                    <Campo id={`edit-foto-${b.id}`} etiqueta="URL de la foto (opcional)" ayuda="Déjala vacía para quitar la foto.">
+                      <div className="flex items-center gap-3">
+                        {editando.foto_url.trim() ? (
+                          <img src={editando.foto_url.trim()} alt="" className="w-10 h-10 rounded-xl object-cover border border-slate-700 flex-shrink-0" />
+                        ) : (
+                          <div className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-amber-400 font-bold flex-shrink-0">
+                            {(editando.nombre.trim() || b.nombre)[0]}
+                          </div>
+                        )}
+                        <input id={`edit-foto-${b.id}`} type="url" maxLength={255} placeholder="https://..." value={editando.foto_url} onChange={(e) => setEditando({ ...editando, foto_url: e.target.value })} className={CLASE_INPUT} />
+                      </div>
                     </Campo>
                   </div>
                   <div className="flex justify-end gap-2">
@@ -192,37 +210,35 @@ function PanelBarberos() {
 
                   {b.activo &&
                     (eliminandoId === b.id ? (
-                      <div className="flex flex-col sm:items-end gap-2 sm:max-w-sm">
-                        <p className="text-xs text-slate-300 sm:text-right">
-                          Se dará de baja el perfil, se cancelarán sus citas futuras y se notificará a los clientes.
-                          El historial se conserva. ¿Continuar?
-                        </p>
-                        <div className="flex gap-2">
-                          <button onClick={() => setEliminandoId(null)} className="px-3 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 text-slate-300 text-xs transition">No</button>
-                          <button
-                            disabled={procesando}
-                            onClick={() => eliminar(b)}
-                            className="px-3 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-400 disabled:opacity-50 text-white text-xs font-semibold transition"
-                          >
-                            {procesando ? 'Eliminando...' : 'Sí, dar de baja'}
-                          </button>
-                        </div>
-                      </div>
+                      <ConfirmarEliminacion
+                        texto="Se dará de baja el perfil, se cancelarán sus citas futuras y se notificará a los clientes. El historial se conserva. ¿Continuar?"
+                        procesando={procesando}
+                        textoConfirmar="Sí, dar de baja"
+                        onCancelar={() => setEliminandoId(null)}
+                        onConfirmar={() => eliminar(b)}
+                      />
                     ) : (
                       <div className="flex gap-2">
                         <button
                           onClick={() => {
                             setError('');
                             setMensaje('');
-                            setEditando({ id: b.id, nombre: b.nombre, foto_url: b.foto_url || '' });
+                            setEditando({
+                              id: b.id,
+                              nombre: b.nombre,
+                              email: b.email,
+                              emailOriginal: b.email,
+                              password: '',
+                              foto_url: b.foto_url || '',
+                            });
                           }}
-                          className="px-3 py-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 text-xs font-medium flex items-center gap-1.5 transition"
+                          className={CLASE_BOTON_EDITAR}
                         >
                           <Pencil className="w-3.5 h-3.5" /> Editar
                         </button>
                         <button
                           onClick={() => setEliminandoId(b.id)}
-                          className="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-medium flex items-center gap-1.5 transition"
+                          className={CLASE_BOTON_ELIMINAR}
                         >
                           <Trash2 className="w-3.5 h-3.5" /> Eliminar
                         </button>
@@ -239,9 +255,10 @@ function PanelBarberos() {
 }
 
 // ---------------------------------------------------------------------------
-// Servicios: alta, modificación y baja lógica (RF-08, RF-09, RF-10)
+// Servicios: alta, modificación y baja lógica (RF-08, RF-09, RF-10).
+// v1.2: descripción opcional que el cliente ve en un modal al elegir servicios.
 // ---------------------------------------------------------------------------
-const SERVICIO_VACIO = { nombre: '', duracion_minutos: '', precio: '' };
+const SERVICIO_VACIO = { nombre: '', duracion_minutos: '', precio: '', descripcion: '' };
 
 function PanelServicios() {
   const [servicios, setServicios] = useState([]);
@@ -270,7 +287,13 @@ function PanelServicios() {
   }, [cargar]);
 
   // El precio se envía como texto: el backend lo interpreta como Decimal sin pérdida de precisión.
-  const aPayload = (f) => ({ nombre: f.nombre.trim(), duracion_minutos: Number(f.duracion_minutos), precio: String(f.precio).trim() });
+  // La descripción vacía se envía como null: el servicio queda sin descripción y el cliente no ve el botón.
+  const aPayload = (f) => ({
+    nombre: f.nombre.trim(),
+    duracion_minutos: Number(f.duracion_minutos),
+    precio: String(f.precio).trim(),
+    descripcion: f.descripcion.trim() || null,
+  });
 
   const crear = async (e) => {
     e.preventDefault();
@@ -335,6 +358,14 @@ function PanelServicios() {
       <Campo id={`${prefijo}-precio`} etiqueta="Precio (COP)">
         <input id={`${prefijo}-precio`} type="number" required min={0} step="any" value={valor.precio} onChange={(e) => setValor({ ...valor, precio: e.target.value })} className={CLASE_INPUT} />
       </Campo>
+      <Campo
+        id={`${prefijo}-descripcion`}
+        etiqueta="Descripción (opcional)"
+        ayuda={`Si la escribes, el cliente verá el botón «Ver descripción» en este servicio. ${valor.descripcion.length}/1000 caracteres.`}
+        className="sm:col-span-3"
+      >
+        <textarea id={`${prefijo}-descripcion`} rows={2} maxLength={1000} placeholder="Qué incluye el servicio, recomendaciones..." value={valor.descripcion} onChange={(e) => setValor({ ...valor, descripcion: e.target.value })} className={CLASE_INPUT} />
+      </Campo>
     </div>
   );
 
@@ -371,45 +402,48 @@ function PanelServicios() {
                 </form>
               ) : (
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <h4 className="font-bold text-white">{s.nombre}</h4>
                     <p className="text-xs text-slate-400 flex items-center gap-3 mt-0.5">
                       <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5 text-amber-400" /> {s.duracion_minutos} min</span>
                       <span className="text-amber-400 font-semibold">{formatearPrecio(s.precio)}</span>
                     </p>
+                    {s.descripcion ? (
+                      <p className="text-xs text-slate-400 mt-1 line-clamp-2 break-words">{s.descripcion}</p>
+                    ) : (
+                      <p className="text-xs text-slate-600 mt-1">Sin descripción</p>
+                    )}
                   </div>
 
                   {eliminandoId === s.id ? (
-                    <div className="flex flex-col sm:items-end gap-2 sm:max-w-sm">
-                      <p className="text-xs text-slate-300 sm:text-right">
-                        El servicio dejará de ofrecerse a los clientes. Las citas pasadas y agendadas no cambian. ¿Continuar?
-                      </p>
-                      <div className="flex gap-2">
-                        <button onClick={() => setEliminandoId(null)} className="px-3 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 text-slate-300 text-xs transition">No</button>
-                        <button
-                          disabled={procesando}
-                          onClick={() => eliminar(s)}
-                          className="px-3 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-400 disabled:opacity-50 text-white text-xs font-semibold transition"
-                        >
-                          {procesando ? 'Eliminando...' : 'Sí, eliminar'}
-                        </button>
-                      </div>
-                    </div>
+                    <ConfirmarEliminacion
+                      texto="El servicio dejará de ofrecerse a los clientes. Las citas pasadas y agendadas no cambian. ¿Continuar?"
+                      procesando={procesando}
+                      textoConfirmar="Sí, eliminar"
+                      onCancelar={() => setEliminandoId(null)}
+                      onConfirmar={() => eliminar(s)}
+                    />
                   ) : (
                     <div className="flex gap-2">
                       <button
                         onClick={() => {
                           setError('');
                           setMensaje('');
-                          setEditando({ id: s.id, nombre: s.nombre, duracion_minutos: String(s.duracion_minutos), precio: String(Number(s.precio)) });
+                          setEditando({
+                            id: s.id,
+                            nombre: s.nombre,
+                            duracion_minutos: String(s.duracion_minutos),
+                            precio: String(Number(s.precio)),
+                            descripcion: s.descripcion || '',
+                          });
                         }}
-                        className="px-3 py-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 text-xs font-medium flex items-center gap-1.5 transition"
+                        className={CLASE_BOTON_EDITAR}
                       >
                         <Pencil className="w-3.5 h-3.5" /> Editar
                       </button>
                       <button
                         onClick={() => setEliminandoId(s.id)}
-                        className="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-medium flex items-center gap-1.5 transition"
+                        className={CLASE_BOTON_ELIMINAR}
                       >
                         <Trash2 className="w-3.5 h-3.5" /> Eliminar
                       </button>
@@ -431,6 +465,7 @@ function PanelServicios() {
 const SECCIONES = [
   { id: 'barberos', etiqueta: 'Barberos', Icono: Users },
   { id: 'servicios', etiqueta: 'Servicios', Icono: Scissors },
+  { id: 'estilos', etiqueta: 'Estilos', Icono: Sparkles },
 ];
 
 export default function AdminPanel() {
@@ -443,7 +478,7 @@ export default function AdminPanel() {
           <ShieldCheck className="w-6 h-6 text-amber-400" />
           Administración
         </h2>
-        <p className="text-slate-400 text-xs sm:text-sm mt-1">Gestiona los barberos y el catálogo de servicios.</p>
+        <p className="text-slate-400 text-xs sm:text-sm mt-1">Gestiona los barberos y los catálogos de servicios y estilos.</p>
         <div className="flex gap-1 sm:gap-2 mt-4 border-b border-slate-800">
           {SECCIONES.map(({ id, etiqueta, Icono }) => (
             <button
@@ -461,6 +496,7 @@ export default function AdminPanel() {
 
       {seccion === 'barberos' && <PanelBarberos />}
       {seccion === 'servicios' && <PanelServicios />}
+      {seccion === 'estilos' && <PanelEstilos />}
     </div>
   );
 }

@@ -122,6 +122,11 @@ def _datos_cita(cita, con_cliente: bool = False) -> List[Tuple[str, str]]:
     datos += [
         ("Barbero", cita.barbero.nombre),
         ("Servicios", servicios),
+    ]
+    estilo = getattr(cita, "estilo", None)  # v1.2 (RF-34): las citas anteriores no tienen estilo
+    if estilo is not None:
+        datos.append(("Estilo", estilo.nombre))
+    datos += [
         ("Fecha", _fecha_con_dia(cita.fecha)),
         ("Hora", f"{_hora(cita.hora_inicio)} a {_hora(cita.hora_fin)}"),
         ("Duración", _duracion(sum(cs.duracion_minutos for cs in cita.servicios))),

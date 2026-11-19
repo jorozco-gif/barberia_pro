@@ -16,10 +16,11 @@ from main import app
 
 
 def horarios(client, h, barbero, fecha, franja, servicios):
-    r = client.get("/api/disponibilidad", headers=h, params={
-        "barbero_id": barbero.id, "fecha": fecha.isoformat(), "franja": franja,
-        "servicios_ids": [s.id for s in servicios],
-    })
+    """Horas de inicio libres. Con franja=None se consultan todos los turnos del día (v1.2, RF-17)."""
+    params = {"barbero_id": barbero.id, "fecha": fecha.isoformat(), "servicios_ids": [s.id for s in servicios]}
+    if franja is not None:
+        params["franja"] = franja
+    r = client.get("/api/disponibilidad", headers=h, params=params)
     assert r.status_code == 200, r.text
     return [s["hora_inicio"] for s in r.json()]
 
@@ -98,16 +99,19 @@ def test_cp_rf16_5_hoy_no_se_ofrecen_horarios_que_ya_pasaron(client, reloj, h_cl
     assert horarios(client, h, barbero, reloj.en(0), "Mañana", [corte])[0] == "09:30"
 
 
-# ---------- RF-17 Franjas ----------
-def test_cp_rf17_1_franja_tarde(client, reloj, h_cliente, barbero, corte):
-    inicios = horarios(client, h_cliente, barbero, reloj.en(1), "Tarde", [corte])
-    assert inicios[0] == "12:00" and inicios[-1] == "17:30"
-    assert len(inicios) == 12
+# ---------- RF-17 Turnos del día (v1.2: el cliente ya no elige franja) ----------
+def test_cp_rf17_1_sin_franja_se_muestran_todos_los_turnos_del_dia(client, reloj, h_cliente, barbero, corte):
+    inicios = horarios(client, h_cliente, barbero, reloj.en(1), None, [corte])
+    assert inicios[0] == "08:00" and inicios[-1] == "19:30"  # el barbero atiende de 08:00 a 20:00
+    assert len(inicios) == 24
+    # Es exactamente la unión de las tres franjas, sin repetir ni omitir turnos
+    por_franja = [hora_ for franja in ("Mañana", "Tarde", "Noche")
+                  for hora_ in horarios(client, h_cliente, barbero, reloj.en(1), franja, [corte])]
+    assert inicios == por_franja
 
 
-def test_cp_rf17_2_sin_franja_o_franja_invalida(client, reloj, h_cliente, barbero, corte):
+def test_cp_rf17_2_franja_invalida(client, reloj, h_cliente, barbero, corte):
     base = {"barbero_id": barbero.id, "fecha": reloj.en(1).isoformat(), "servicios_ids": [corte.id]}
-    assert client.get("/api/disponibilidad", headers=h_cliente, params=base).status_code == 422
     assert client.get("/api/disponibilidad", headers=h_cliente, params={**base, "franja": "Madrugada"}).status_code == 422
 
 
@@ -123,6 +127,21 @@ def test_cp_rf17_3_limite_entre_manana_y_tarde(client, db, reloj, h_cliente, cor
 def test_cp_rf17_4_franja_noche(client, reloj, h_cliente, barbero, corte):
     inicios = horarios(client, h_cliente, barbero, reloj.en(1), "Noche", [corte])
     assert inicios == ["18:00", "18:30", "19:00", "19:30"]  # el barbero atiende hasta las 20:00
+
+
+def test_cp_rf17_5_franja_tarde(client, reloj, h_cliente, barbero, corte):
+    """La franja sigue disponible como filtro opcional de la API, por compatibilidad: la interfaz v1.2 ya no la pide."""
+    inicios = horarios(client, h_cliente, barbero, reloj.en(1), "Tarde", [corte])
+    assert inicios[0] == "12:00" and inicios[-1] == "17:30"
+    assert len(inicios) == 12
+
+
+def test_cp_rf17_6_sin_franja_excluye_reservas_y_horas_pasadas(client, db, reloj, h_cliente, cliente, barbero, corte):
+    reloj.ahora = reloj.ahora.replace(hour=15, minute=10)
+    h = iniciar_sesion(client, "cliente@test.com")
+    crear_cita(db, cliente, barbero, corte, reloj.en(0), "17:00")
+    assert horarios(client, h, barbero, reloj.en(0), None, [corte]) == [
+        "15:30", "16:00", "16:30", "17:30", "18:00", "18:30", "19:00", "19:30"]
 
 
 # ---------- RF-18 Horarios libres ----------
@@ -176,12 +195,13 @@ def test_cp_rf18_5_dia_sin_atencion(client, reloj, h_cliente, barbero, corte):
 
 # ---------- RF-19 Agendamiento ----------
 def test_cp_rf19_1_cita_creada_programada_con_codigo(client, db, reloj, h_cliente, barbero, corte, barba):
-    r = agendar(client, h_cliente, barbero, [corte, barba], reloj.en(1), "10:00", notas="Degradado")
+    r = agendar(client, h_cliente, barbero, [corte, barba], reloj.en(1), "10:00")
     assert r.status_code == 201
     cita = r.json()
     assert cita["estado"] == "Programada" and cita["reprogramada"] is False
     assert re.fullmatch(r"BSP-[0-9A-F]{6}", cita["codigo_reserva"])
-    assert cita["notas"] == "Degradado" and cita["cliente"]["email"] == "cliente@test.com"
+    assert cita["cliente"]["email"] == "cliente@test.com"
+    assert cita["notas"] is None and cita["estilo"] is None  # v1.2: sin notas; sin catálogo de estilos, sin estilo
     assert Decimal(cita["total"]) == 30000
     assert (cita["hora_inicio"], cita["hora_fin"]) == ("10:00:00", "10:45:00")
     assert len(cita["servicios"]) == 2
@@ -235,10 +255,17 @@ def test_cp_rf19_8_validaciones_del_cuerpo(client, reloj, h_cliente, barbero, co
     base = {"barbero_id": barbero.id, "servicios_ids": [corte.id], "fecha": reloj.en(1).isoformat(),
             "hora_inicio": "10:00"}
     for cambio in ({"servicios_ids": [corte.id, corte.id]}, {"hora_inicio": None}, {"fecha": "no-es-fecha"},
-                   {"barbero_id": 0}, {"notas": "x" * 501}):
+                   {"barbero_id": 0}, {"estilo_id": 0}, {"estilo_id": "uno"}):
         assert client.post("/api/citas", headers=h_cliente, json={**base, **cambio}).status_code == 422, cambio
     sin_barbero = {k: v for k, v in base.items() if k != "barbero_id"}
     assert client.post("/api/citas", headers=h_cliente, json=sin_barbero).status_code == 422
+
+
+def test_cp_rf19_10_las_notas_ya_no_se_guardan(client, db, reloj, h_cliente, barbero, corte):
+    """v1.2: el campo de notas se eliminó del formulario y del cuerpo; si un cliente antiguo lo envía, se ignora."""
+    r = agendar(client, h_cliente, barbero, corte, reloj.en(1), "10:00", notas="Degradado")
+    assert r.status_code == 201 and r.json()["notas"] is None
+    assert db.get(models.Cita, r.json()["id"]).notas is None
 
 
 def test_cp_rf19_9_solo_el_cliente_agenda(client, reloj, h_barbero, h_admin, barbero, corte):

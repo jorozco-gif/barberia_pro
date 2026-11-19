@@ -24,7 +24,7 @@ import schemas
 import security
 from models import (
     ahora_colombia,
-    Barbero, Bloqueo, Cita, CitaServicio, Disponibilidad, Servicio, Sesion, TokenRecuperacion, Usuario,
+    Barbero, Bloqueo, Cita, CitaServicio, Disponibilidad, Estilo, Servicio, Sesion, TokenRecuperacion, Usuario,
     ROL_ADMIN, ROL_BARBERO, ROL_CLIENTE,
     ESTADO_CANCELADA, ESTADO_INASISTENCIA, ESTADO_PROGRAMADA,
 )
@@ -144,6 +144,13 @@ def _servicio_activo(db: Session, servicio_id: int) -> Servicio:
     if servicio is None:
         raise NoEncontrado("El servicio no existe o no está disponible.")
     return servicio
+
+
+def _estilo_activo(db: Session, estilo_id: int) -> Estilo:
+    estilo = db.query(Estilo).filter(Estilo.id == estilo_id, Estilo.activo == True).first()  # noqa: E712
+    if estilo is None:
+        raise NoEncontrado("El estilo no existe o no está disponible.")
+    return estilo
 
 
 def _obtener_cita(db: Session, cita_id: int, bloquear: bool = False) -> Cita:
@@ -332,13 +339,30 @@ def crear_barbero(db: Session, datos: schemas.BarberoCreate) -> Barbero:
 
 
 def actualizar_barbero(db: Session, barbero_id: int, datos: schemas.BarberoUpdate) -> Barbero:
+    """RF-06 (v1.2): el administrador puede modificar nombre, correo, contraseña y foto.
+    El correo nuevo no puede pertenecer a otra cuenta (CA-06.3). Si cambia la contraseña,
+    se cierran las sesiones abiertas del barbero para que vuelva a ingresar con la nueva (CA-06.4)."""
     barbero = _barbero_activo(db, barbero_id)
+    usuario = barbero.usuario
     cambios = datos.model_dump(exclude_unset=True)
     if "nombre" in cambios:
-        barbero.usuario.nombre = cambios["nombre"]
+        usuario.nombre = cambios["nombre"]
+    if "email" in cambios:
+        email = _normalizar_email(cambios["email"])
+        if email != _normalizar_email(usuario.email):
+            if _correo_en_uso(db, email):
+                raise ReglaIncumplida(f"Ya existe una cuenta registrada con el correo '{email}'.")
+            usuario.email = email
+    if "password" in cambios:
+        usuario.password_hash = security.hash_password(cambios["password"])
+        _cerrar_sesiones(db, usuario.id)
     if "foto_url" in cambios:
         barbero.foto_url = cambios["foto_url"]
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:  # otra petición registró el mismo correo al mismo tiempo
+        db.rollback()
+        raise ReglaIncumplida(f"Ya existe una cuenta registrada con el correo '{cambios.get('email')}'.")
     return barbero
 
 
@@ -390,6 +414,51 @@ def eliminar_servicio(db: Session, servicio_id: int) -> Servicio:
     servicio.activo = False
     db.commit()
     return servicio
+
+
+# ==========================================
+# Estilos (v1.2: RF-33 y RF-34)
+# ==========================================
+def listar_estilos(db: Session, solo_activos: bool = True) -> List[Estilo]:
+    consulta = db.query(Estilo)
+    if solo_activos:
+        consulta = consulta.filter(Estilo.activo == True)  # noqa: E712
+    return consulta.order_by(Estilo.id).all()
+
+
+def crear_estilo(db: Session, datos: schemas.EstiloCreate) -> Estilo:
+    estilo = Estilo(**datos.model_dump(), activo=True)
+    db.add(estilo)
+    db.commit()
+    return estilo
+
+
+def actualizar_estilo(db: Session, estilo_id: int, datos: schemas.EstiloUpdate) -> Estilo:
+    """Las citas que ya eligieron el estilo lo siguen mostrando con sus datos actuales."""
+    estilo = _estilo_activo(db, estilo_id)
+    for campo, valor in datos.model_dump(exclude_unset=True).items():
+        setattr(estilo, campo, valor)
+    db.commit()
+    return estilo
+
+
+def eliminar_estilo(db: Session, estilo_id: int) -> Estilo:
+    """Eliminación lógica: el estilo deja de ofrecerse, pero las citas que lo eligieron lo conservan."""
+    estilo = _estilo_activo(db, estilo_id)
+    estilo.activo = False
+    db.commit()
+    return estilo
+
+
+def _resolver_estilo(db: Session, estilo_id: Optional[int]) -> Optional[Estilo]:
+    """RF-34 y PN-14: si el catálogo tiene estilos activos, el cliente debe elegir uno de ellos.
+    Con el catálogo vacío la cita se agenda sin estilo, para no bloquear las reservas."""
+    if estilo_id is not None:
+        return _estilo_activo(db, estilo_id)
+    hay_estilos = db.query(Estilo.id).filter(Estilo.activo == True).first() is not None  # noqa: E712
+    if hay_estilos:
+        raise ReglaIncumplida("Debes elegir un estilo para tu cita.")
+    return None
 
 
 def calcular_resumen(db: Session, servicios_ids: List[int]) -> dict:
@@ -536,16 +605,21 @@ def _exigir_intervalo(hora_inicio: datetime.time) -> None:
 
 
 def _horarios_libres(
-    db: Session, barbero_id: int, fecha: datetime.date, franja: str, duracion_minutos: int,
+    db: Session, barbero_id: int, fecha: datetime.date, franja: Optional[str], duracion_minutos: int,
     excluir_cita_id: Optional[int] = None,
 ) -> List[dict]:
+    """Turnos libres del día. v1.2 (RF-17): sin franja se devuelven todos los turnos del día; con franja
+    (filtro opcional que sigue usando la reprogramación) solo los que empiezan dentro de ella (PN-03)."""
     ahora = ahora_colombia()
     if fecha < ahora.date():
         raise ReglaIncumplida("No se pueden consultar horarios de una fecha que ya pasó.")  # CA-16.2
     _barbero_activo(db, barbero_id)
 
     agenda = _cargar_agenda(db, barbero_id, fecha, excluir_cita_id)
-    inicio_franja, fin_franja = politicas.FRANJAS[franja]
+    if franja is None:
+        inicio_franja, fin_franja = datetime.time.min, datetime.time.max
+    else:
+        inicio_franja, fin_franja = politicas.FRANJAS[franja]
     duracion = datetime.timedelta(minutes=duracion_minutos)
     paso = datetime.timedelta(minutes=politicas.INTERVALO_MINUTOS)
 
@@ -571,9 +645,10 @@ def _horarios_libres(
 
 
 def consultar_disponibilidad(
-    db: Session, barbero_id: int, fecha: datetime.date, franja: str, servicios_ids: List[int]
+    db: Session, barbero_id: int, fecha: datetime.date, franja: Optional[str], servicios_ids: List[int]
 ) -> List[dict]:
-    """RF-16 a RF-18: solo los horarios libres de la franja que alcanzan para la duración total."""
+    """RF-16 a RF-18: solo los horarios libres del día (o de la franja, si se indica) que alcanzan
+    para la duración total."""
     servicios = obtener_servicios_activos(db, servicios_ids)
     return _horarios_libres(db, barbero_id, fecha, franja, sum(s.duracion_minutos for s in servicios))
 
@@ -614,11 +689,13 @@ def _generar_codigo_unico(db: Session) -> str:
 
 
 def agendar_cita(db: Session, cliente: Usuario, datos: schemas.CitaCreate) -> Cita:
-    """RF-19 y RF-20. Orden de las validaciones: 404, 400 (pasado), 403 (suspendido), 409 (límite),
-    409 (horario no disponible o con choque) y 400 (fuera del intervalo de PN-02)."""
+    """RF-19, RF-20 y RF-34. Orden de las validaciones: 404 (barbero, servicios o estilo), 400 (falta el estilo),
+    400 (pasado), 403 (suspendido), 409 (límite), 409 (horario no disponible o con choque) y 400 (fuera del
+    intervalo de PN-02)."""
     with _seccion_critica(db):
         _bloquear_barbero(db, datos.barbero_id)  # primero el bloqueo, antes de leer el resto
         servicios = obtener_servicios_activos(db, datos.servicios_ids)
+        estilo = _resolver_estilo(db, datos.estilo_id)
 
         ahora = ahora_colombia()
         if datetime.datetime.combine(datos.fecha, datos.hora_inicio) <= ahora:
@@ -653,7 +730,7 @@ def agendar_cita(db: Session, cliente: Usuario, datos: schemas.CitaCreate) -> Ci
             hora_fin=hora_fin,
             estado=ESTADO_PROGRAMADA,
             total=sum((s.precio for s in servicios), Decimal("0")),
-            notas=datos.notas,
+            estilo_id=estilo.id if estilo else None,
             servicios=[
                 CitaServicio(servicio_id=s.id, precio_aplicado=s.precio, duracion_minutos=s.duracion_minutos)
                 for s in servicios
@@ -721,7 +798,7 @@ def _exigir_reprogramable(cita: Cita, ahora: datetime.datetime) -> None:
 
 
 def horarios_para_reprogramar(
-    db: Session, cliente: Usuario, cita_id: int, fecha: datetime.date, franja: str
+    db: Session, cliente: Usuario, cita_id: int, fecha: datetime.date, franja: Optional[str]
 ) -> List[dict]:
     """Horarios libres del mismo barbero para la misma duración. El horario actual de la cita cuenta como libre."""
     cita = _obtener_cita_del_cliente(db, cliente, cita_id)

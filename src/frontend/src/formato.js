@@ -8,9 +8,6 @@ export const INTERVALO_MINUTOS = 30;
 
 export const DIAS_SEMANA = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']; // 0 = lunes
 
-// Valores aceptados por el parámetro `franja` del backend (PN-03).
-export const FRANJAS = ['Mañana', 'Tarde', 'Noche'];
-
 /** Fecha de hoy (YYYY-MM-DD) en Colombia. */
 export function hoyColombia(ahora = new Date()) {
   return new Intl.DateTimeFormat('en-CA', {

@@ -63,10 +63,11 @@ def test_cp_rnf07_las_claves_foraneas_se_aplican(db, cliente, barbero, corte, re
     assert db.get(models.Cita, cita.id) is not None
 
 
-def test_el_esquema_tiene_las_nueve_tablas_esperadas():
+def test_el_esquema_tiene_las_diez_tablas_esperadas():
     assert set(database.Base.metadata.tables) == {
         "usuarios", "barberos", "servicios", "citas", "citas_servicios",
         "disponibilidades", "bloqueos", "tokens_recuperacion", "sesiones",
+        "estilos",  # v1.2 (RF-33)
     }
 
 
@@ -137,6 +138,9 @@ def test_seed_con_contrasenas_de_entorno_es_idempotente(client, db, monkeypatch)
     assert db.query(models.Usuario).filter_by(rol=models.ROL_ADMIN).count() == 1
     assert db.query(models.Barbero).count() == len(seed.BARBEROS_EJEMPLO)
     assert db.query(models.Servicio).count() == len(seed.SERVICIOS_EJEMPLO)
+    assert db.query(models.Estilo).count() == len(seed.ESTILOS_EJEMPLO)  # v1.2 (RF-33)
+    assert all(e.descripcion for e in db.query(models.Estilo))
+    assert db.query(models.Servicio).filter(models.Servicio.descripcion.isnot(None)).count() >= 1
     assert db.query(models.Disponibilidad).count() > 0
     r = client.post("/api/auth/login", json={"email": "admin@barbershop.pro", "password": "AdminSeed#2030"})
     assert r.status_code == 200 and r.json()["usuario"]["rol"] == models.ROL_ADMIN

@@ -2,7 +2,7 @@
  
 **Proyecto:** BarberShop Pro — Sistema de Gestión y Agendamiento de Barbería
 **Curso:** Ingeniería de Software II (Código 17934) — Cotecnova
-**Versión:** 1.1 (propuesta de modificación sobre la v1.0 del Seguimiento 1)
+**Versión:** 1.2 (refactorización del agendamiento y catálogo de estilos, sobre la v1.1)
 **Responsable de Documentación:** Juan David Monroy
 **Revisado por:** Elizabeth Ramirez (Líder Técnico), Juan David Osorio (Calidad)
  
@@ -13,6 +13,14 @@
 El presente documento formaliza los requisitos funcionales, no funcionales y criterios de aceptación para el desarrollo del sistema **BarberShop Pro**. La aplicación tiene como objetivo resolver los problemas operativos comunes en barberías urbanas: pérdidas de turnos por desorganización, doble reserva simultánea de barberos y falta de visibilidad del rendimiento del personal.
  
 Esta versión incorpora cuentas con inicio de sesión por rol, disponibilidad definida por cada barbero, citas con varios servicios y una sección de políticas del negocio que concentra los valores configurables (tiempos, límites y sanciones).
+
+**Cambios de la versión 1.2:**
+
+- Nuevo orden del agendamiento: **Barbero → Servicios (y estilo) → Fecha y hora → Confirmación** (RF-13, RF-14).
+- Los servicios tienen una descripción opcional que el cliente consulta en una ventana flotante (RF-08, RF-09, RF-14).
+- Catálogo de **estilos** administrado por el administrador (RF-33). El cliente elige un estilo al reservar (RF-34, PN-14); el estilo reemplaza al campo libre de notas, que se retira de la confirmación (RF-19).
+- Al elegir la fecha se muestran todos los turnos libres del día, sin pedir una franja (RF-16, RF-17, RF-18, RF-24).
+- El administrador puede modificar los cuatro campos del barbero: nombre, correo, contraseña y foto (RF-06).
  
 ---
  
@@ -22,13 +30,15 @@ Esta versión incorpora cuentas con inicio de sesión por rol, disponibilidad de
 |---|---|
 | **Cliente** | Usuario final con cuenta propia. Consulta servicios y disponibilidad, agenda, cancela y reprograma sus citas. |
 | **Barbero** | Profesional con cuenta creada por el administrador. Define su disponibilidad, visualiza su agenda y actualiza el estado de atención de las citas. |
-| **Administrador** | Administra el catálogo de servicios, gestiona barberos, consulta todas las citas y supervisa el flujo general de la barbería. |
+| **Administrador** | Administra los catálogos de servicios y de estilos, gestiona barberos, consulta todas las citas y supervisa el flujo general de la barbería. |
  
 | Término | Definición |
 |---|---|
 | **Estados de una cita** | `Programada`, `Atendida`, `Cancelada` e `Inasistencia`. |
 | **Cita activa** | Cita en estado `Programada`. |
 | **Inasistencia** | El cliente no se presenta a la cita sin haberla cancelado con la anticipación de la política PN-04. Es el estado que marca el barbero en RF-27. |
+| **Estilo** | Resultado de corte que el cliente elige al reservar (ej. *Fade bajo*, *Pompadour*). Tiene nombre, descripción y una foto opcional, y lo administra el administrador (RF-33, RF-34). |
+| **Turno** | Horario libre de inicio de una cita, en intervalos de la política PN-02, que alcanza para la duración total de los servicios elegidos. |
  
 ---
  
@@ -44,6 +54,7 @@ erDiagram
     BARBERO ||--o{ BLOQUEO : registra
     CITA ||--|{ CITA_SERVICIO : contiene
     SERVICIO ||--o{ CITA_SERVICIO : "se reserva en"
+    ESTILO |o--o{ CITA : "se elige en"
  
     USUARIO {
         int id PK
@@ -68,6 +79,15 @@ erDiagram
         string nombre
         int duracion_minutos
         decimal precio
+        text descripcion "opcional (v1.2)"
+        boolean activo
+    }
+
+    ESTILO {
+        int id PK
+        string nombre
+        text descripcion
+        string foto_url "opcional"
         boolean activo
     }
  
@@ -82,7 +102,8 @@ erDiagram
         string estado
         decimal total
         boolean reprogramada
-        text notas
+        int estilo_id FK "opcional (v1.2)"
+        text notas "histórico, v1.1"
     }
  
     CITA_SERVICIO {
@@ -121,7 +142,9 @@ erDiagram
 **Notas del modelo:**
  
 - `CITA_SERVICIO` guarda el precio y la duración vigentes al momento de reservar, para que modificar un servicio (RF-09) no altere citas ya agendadas.
-- Eliminar un barbero o un servicio (RF-07, RF-10) es una eliminación lógica (`activo = false`), para conservar el historial.
+- Eliminar un barbero, un servicio o un estilo (RF-07, RF-10, RF-33) es una eliminación lógica (`activo = false`), para conservar el historial.
+- `CITA.estilo_id` es opcional: queda vacío en las citas anteriores a la v1.2 y en las agendadas cuando el catálogo de estilos está vacío (PN-14). La clave foránea impide borrar físicamente un estilo con citas.
+- `CITA.notas` ya no se pide al cliente desde la v1.2; la columna se conserva para no perder las notas de citas anteriores.
 - `USUARIO.suspendido_hasta` guarda la fecha en que termina la suspensión por inasistencias (RF-29).
 ---
  
@@ -160,10 +183,12 @@ erDiagram
   * **CA-05.2:** *Dado* un intento de registro con un correo ya existente, *cuando* se envía la petición, *entonces* el sistema rechaza la creación retornando `HTTP 400 Bad Request` y un mensaje de error explicativo.
   * **CA-05.3:** *Dado* un registro sin nombre, *cuando* se envía la petición, *entonces* el sistema responde `HTTP 422 Unprocessable Entity` indicando que el nombre es obligatorio.
 ### 📌 RF-06: Modificación del Perfil del Barbero
-* **Descripción:** El sistema debe permitir al administrador modificar el perfil de un barbero.
+* **Descripción:** El sistema debe permitir al administrador modificar los cuatro campos del registro de un barbero: nombre, correo electrónico, contraseña y foto. La contraseña solo cambia si el administrador escribe una nueva; dejarla vacía conserva la actual.
 * **Criterios de Aceptación:**
   * **CA-06.1:** *Dado* un barbero registrado, *cuando* el administrador cambia su nombre y su foto y guarda, *entonces* el sistema guarda los cambios y el cliente ve el perfil actualizado al elegir barbero.
   * **CA-06.2:** *Dado* un barbero registrado, *cuando* el administrador borra el nombre y guarda, *entonces* el sistema responde `HTTP 422` y el perfil conserva los datos anteriores.
+  * **CA-06.3:** *Dado* un correo que ya pertenece a otra cuenta, *cuando* el administrador lo asigna al barbero, *entonces* el sistema responde `HTTP 400 Bad Request` indicando que el correo ya está registrado, y el perfil conserva los datos anteriores.
+  * **CA-06.4:** *Dado* un barbero con sesión iniciada, *cuando* el administrador le asigna una nueva contraseña, *entonces* el barbero solo puede ingresar con la nueva y sus sesiones abiertas se cierran.
 ### 📌 RF-07: Eliminación del Perfil del Barbero
 * **Descripción:** El sistema debe permitir al administrador eliminar el perfil de un barbero. El sistema conservará el historial de sus citas y tratará las citas futuras según la política PN-08.
 * **Criterios de Aceptación:**
@@ -172,16 +197,18 @@ erDiagram
 ### 4.3 Catálogo y gestión de servicios (administrador)
  
 ### 📌 RF-08: Registro de Servicios
-* **Descripción:** El sistema debe permitir al administrador agregar servicios indicando nombre, precio y duración en minutos.
+* **Descripción:** El sistema debe permitir al administrador agregar servicios indicando nombre, precio, duración en minutos y, de forma opcional, una descripción (máximo 1000 caracteres) que el cliente puede consultar al elegir servicios (RF-14).
 * **Criterios de Aceptación:**
   * **CA-08.1:** *Dado* un nuevo servicio con duración > 0 minutos y precio ≥ 0, *cuando* se guarda, *entonces* queda disponible en el catálogo de citas.
   * **CA-08.2:** *Dado* un servicio con duración menor o igual a cero (ej. 0 o -15 min), *cuando* se envía la solicitud, *entonces* el sistema debe responder con un error de validación `HTTP 422 Unprocessable Entity`.
   * **CA-08.3:** *Dado* un servicio con precio vacío o negativo, *cuando* se intenta registrar, *entonces* el sistema debe rechazarlo impidiendo su persistencia.
+  * **CA-08.4:** *Dado* un servicio sin descripción, *cuando* se guarda, *entonces* queda disponible y el cliente no ve el botón de descripción en ese servicio.
 ### 📌 RF-09: Modificación de Servicios
 * **Descripción:** El sistema debe permitir al administrador modificar un servicio. Las citas ya agendadas conservarán el precio con el que se reservaron.
 * **Criterios de Aceptación:**
   * **CA-09.1:** *Dado* un servicio con citas ya agendadas, *cuando* el administrador cambia su precio, *entonces* las citas nuevas usan el precio nuevo y las ya agendadas conservan el anterior.
   * **CA-09.2:** *Dado* un servicio existente, *cuando* el administrador deja el nombre vacío y guarda, *entonces* el sistema responde `HTTP 422` y el servicio conserva sus datos anteriores.
+  * **CA-09.3:** *Dado* un servicio existente, *cuando* el administrador agrega, cambia o borra su descripción, *entonces* el cliente ve la descripción actualizada (o deja de ver el botón si la borró).
 ### 📌 RF-10: Eliminación de Servicios
 * **Descripción:** El sistema debe permitir al administrador eliminar un servicio sin afectar las citas pasadas ni las ya agendadas.
 * **Criterios de Aceptación:**
@@ -203,15 +230,16 @@ erDiagram
 ### 4.5 Agendamiento de citas (cliente)
  
 ### 📌 RF-13: Elección del Barbero
-* **Descripción:** El sistema debe mostrar al cliente los barberos registrados (nombre y foto) y permitirle elegir el de su preferencia.
+* **Descripción:** El sistema debe mostrar al cliente los barberos registrados (nombre y foto) y permitirle elegir el de su preferencia. Desde la v1.2 es el **primer paso** del agendamiento.
 * **Criterios de Aceptación:**
   * **CA-13.1:** *Dado* un cliente que entra a agendar, *cuando* abre la lista de barberos, *entonces* ve los barberos activos con nombre y foto y puede elegir uno.
   * **CA-13.2:** *Dado* un barbero eliminado por el administrador, *cuando* el cliente abre la lista, *entonces* ese barbero no aparece.
 ### 📌 RF-14: Elección de Servicios
-* **Descripción:** El sistema debe permitir al cliente elegir uno o varios de los servicios disponibles.
+* **Descripción:** Después de elegir al barbero, el sistema debe permitir al cliente elegir uno o varios de los servicios disponibles. Si un servicio tiene descripción, el sistema muestra un botón que abre una ventana flotante (modal) con la descripción y un botón "X" para cerrarla.
 * **Criterios de Aceptación:**
   * **CA-14.1:** *Dado* un cliente en la lista de servicios, *cuando* elige dos servicios, *entonces* el sistema marca ambos y le permite continuar.
   * **CA-14.2:** *Dado* un cliente que no eligió ningún servicio, *cuando* intenta continuar, *entonces* el sistema indica que debe elegir al menos uno y no avanza.
+  * **CA-14.3:** *Dado* un servicio con descripción, *cuando* el cliente presiona su botón de descripción, *entonces* se abre un modal con la descripción que se cierra con la "X" (también con la tecla Escape o tocando fuera), sin cambiar los servicios elegidos.
 ### 📌 RF-15: Cálculo del Total y la Duración
 * **Descripción:** El sistema debe calcular y mostrar al cliente el total a pagar y la duración total de los servicios elegidos.
 * **Criterios de Aceptación:**
@@ -220,25 +248,27 @@ erDiagram
 ### 📌 RF-16: Elección de la Fecha
 * **Descripción:** El sistema debe permitir al cliente elegir la fecha de la cita.
 * **Criterios de Aceptación:**
-  * **CA-16.1:** *Dado* un cliente que elige una fecha futura, *cuando* la confirma, *entonces* el sistema la acepta y le muestra las franjas del día.
+  * **CA-16.1:** *Dado* un cliente que elige una fecha futura, *cuando* la selecciona en el calendario, *entonces* el sistema la acepta y le muestra directamente los turnos libres de ese día (RF-17).
   * **CA-16.2:** *Dado* un intento de agendamiento en el pasado (fecha menor a la actual), *cuando* se valida la petición, *entonces* el sistema debe rechazarla con error `HTTP 400`.
-### 📌 RF-17: Elección de la Franja del Día
-* **Descripción:** El sistema debe permitir al cliente elegir una franja del día (Mañana, Tarde o Noche) mediante un selector. Las horas de cada franja se definen en la política PN-03.
+### 📌 RF-17: Turnos Disponibles del Día
+* **Descripción (v1.2):** Al seleccionar la fecha, el sistema debe consultar y mostrar en una sola lista todos los turnos libres de ese día, sin pedir al cliente que filtre por franja (Mañana, Tarde o Noche). La API conserva la franja como filtro opcional (PN-03) por compatibilidad.
 * **Criterios de Aceptación:**
-  * **CA-17.1:** *Dado* un cliente que elige la franja "Tarde", *cuando* la selecciona, *entonces* el sistema toma el rango de `12:00` a `18:00` y muestra los horarios de ese rango.
-  * **CA-17.2:** *Dado* un cliente que no eligió franja, *cuando* intenta continuar, *entonces* el sistema indica que debe elegir una y no avanza.
+  * **CA-17.1:** *Dado* un barbero que atiende de `08:00` a `20:00`, *cuando* el cliente selecciona la fecha, *entonces* el sistema muestra en una sola lista los turnos de `08:00` a `19:30`, sin botones de franja.
+  * **CA-17.2:** *Dado* un turno ya reservado o una hora que ya pasó, *cuando* el cliente consulta los turnos del día, *entonces* esos turnos no aparecen en la lista.
+  * **CA-17.3:** *Dado* un cliente que cambia la fecha, *cuando* la selecciona, *entonces* el sistema descarta el turno elegido antes y muestra los turnos de la nueva fecha.
 ### 📌 RF-18: Consulta de Horarios Libres
-* **Descripción:** El sistema debe mostrar únicamente los horarios libres del barbero elegido, en la fecha y franja seleccionadas, que alcancen para la duración total de la cita.
+* **Descripción:** El sistema debe mostrar únicamente los horarios libres del barbero elegido, en la fecha seleccionada, que alcancen para la duración total de la cita.
 * **Criterios de Aceptación:**
-  * **CA-18.1:** *Dado* un barbero con horarios libres de `14:00` a `17:00`, la franja "Tarde" y servicios de 45 minutos, *cuando* el cliente consulta, *entonces* el sistema muestra solo los horarios libres de esa franja que alcanzan para 45 minutos.
+  * **CA-18.1:** *Dado* un barbero con horarios libres de `14:00` a `17:00` y servicios de 45 minutos, *cuando* el cliente consulta la fecha, *entonces* el sistema muestra solo los horarios libres que alcanzan para 45 minutos.
   * **CA-18.2:** *Dado* un horario ya reservado y un último espacio que no alcanza para 45 minutos, *cuando* el cliente consulta, *entonces* el sistema no los muestra.
   * **CA-18.3:** *Dado* un día u hora bloqueados por el barbero (RF-12), *cuando* el cliente consulta, *entonces* el sistema no los muestra.
 ### 📌 RF-19: Confirmación y Agendamiento
-* **Descripción:** El sistema debe permitir al cliente confirmar y agendar su cita, siempre que no supere el límite de citas activas de la política PN-09. El sistema calcula automáticamente la `hora_fin` sumando la duración total de los servicios a la `hora_inicio`.
+* **Descripción:** El sistema debe permitir al cliente confirmar y agendar su cita, siempre que no supere el límite de citas activas de la política PN-09. El sistema calcula automáticamente la `hora_fin` sumando la duración total de los servicios a la `hora_inicio`. Desde la v1.2 la confirmación muestra el resumen (barbero, servicios, estilo, fecha, hora y total) y **no** tiene campo de notas: la personalización la da el estilo (RF-34).
 * **Criterios de Aceptación:**
   * **CA-19.1:** *Dado* un cliente con 1 cita activa que elige un horario libre, *cuando* confirma, *entonces* el sistema crea la cita en estado `Programada` y genera un código de reserva único alfanumérico (ej: `BSP-A1B2C3`).
   * **CA-19.2:** *Dado* un cliente con 2 citas activas (límite), *cuando* intenta agendar una tercera, *entonces* el sistema rechaza la cita con `HTTP 409 Conflict` e indica que alcanzó el límite de citas.
   * **CA-19.3:** *Dado* servicios con duración total de 45 minutos y una hora de inicio `10:00`, *cuando* se procesa la cita, *entonces* el sistema calcula la hora de fin exactamente a las `10:45`.
+  * **CA-19.4:** *Dado* el paso de confirmación, *cuando* el cliente lo revisa, *entonces* no hay campo de notas; si una aplicación anterior envía notas, el sistema las ignora.
 ### 📌 RF-20: Prevención Estricta de Choques de Horario (No Solapamiento)
 * **Prioridad:** Crítica
 * **Descripción:** El sistema debe impedir que un horario ya reservado sea tomado por otro cliente. Un barbero no puede tener dos citas que se superpongan en horario el mismo día.
@@ -251,7 +281,7 @@ erDiagram
 ### 📌 RF-21: Confirmación de la Cita por Correo
 * **Descripción:** El sistema debe enviar al cliente la confirmación de su cita por correo electrónico.
 * **Criterios de Aceptación:**
-  * **CA-21.1:** *Dado* un cliente que agenda una cita correctamente, *cuando* el sistema la crea, *entonces* el cliente recibe un correo con barbero, servicios, fecha, hora, total y código de reserva.
+  * **CA-21.1:** *Dado* un cliente que agenda una cita correctamente, *cuando* el sistema la crea, *entonces* el cliente recibe un correo con barbero, servicios, estilo (si lo eligió), fecha, hora, total y código de reserva.
   * **CA-21.2:** *Dado* una cita rechazada (por ejemplo, por límite de citas), *cuando* el sistema responde el rechazo, *entonces* no se envía ningún correo de confirmación.
 ### 4.6 Gestión de citas (cliente)
  
@@ -266,7 +296,7 @@ erDiagram
   * **CA-23.1:** *Dado* que faltan más de 12 horas para la cita, *cuando* el cliente solicita la cancelación, *entonces* el estado cambia a `Cancelada` y el horario del barbero se libera.
   * **CA-23.2:** *Dado* que faltan menos de 12 horas para la cita, *cuando* el cliente intenta cancelar, *entonces* el sistema deniega la acción informando que el límite de cancelación expiró.
 ### 📌 RF-24: Reprogramación de Cita
-* **Descripción:** El sistema debe permitir al cliente reprogramar una cita eligiendo un nuevo horario disponible del mismo barbero, respetando las condiciones de la política PN-05.
+* **Descripción:** El sistema debe permitir al cliente reprogramar una cita eligiendo un nuevo horario disponible del mismo barbero, respetando las condiciones de la política PN-05. Como en RF-17, al elegir la fecha se muestran todos los horarios libres del día. La cita conserva sus servicios y su estilo.
 * **Criterios de Aceptación:**
   * **CA-24.1:** *Dado* una cita que no ha sido reprogramada y que empieza en más de 12 horas, *cuando* el cliente elige un nuevo horario libre del mismo barbero, *entonces* la cita pasa al nuevo horario y el horario anterior queda libre.
   * **CA-24.2:** *Dado* una cita que ya fue reprogramada una vez, *cuando* el cliente intenta reprogramarla otra vez, *entonces* el sistema la rechaza e indica que ya se usó la reprogramación.
@@ -310,6 +340,26 @@ erDiagram
   * **CA-30.1:** *Dado* un cliente suspendido, *cuando* intenta iniciar sesión, *entonces* el sistema responde `HTTP 403 Forbidden`, no lo deja ingresar y muestra que su cuenta está suspendida y la fecha de reactivación.
   * **CA-30.2:** *Dado* un cliente cuya suspensión ya terminó, *cuando* inicia sesión, *entonces* ingresa sin ningún aviso de suspensión.
   * **CA-30.3:** *Dado* un cliente suspendido, *cuando* intenta agendar una cita, *entonces* el sistema la rechaza.
+### 4.10 Catálogo de estilos (v1.2)
+ 
+> RF-31 y RF-32 siguen reservados para el dashboard y las calificaciones (por confirmar).
+ 
+### 📌 RF-33: Gestión de Estilos
+* **Descripción:** El sistema debe permitir al administrador listar, crear, editar y eliminar los estilos del catálogo. Cada estilo tiene nombre (obligatorio, 2 a 100 caracteres), descripción (obligatoria, máximo 1000 caracteres, se muestra al cliente en un modal) y foto (opcional, URL). Eliminar un estilo es una eliminación lógica.
+* **Criterios de Aceptación:**
+  * **CA-33.1:** *Dado* un estilo con nombre y descripción válidos, con o sin foto, *cuando* el administrador lo guarda, *entonces* queda activo y los clientes pueden elegirlo al reservar.
+  * **CA-33.2:** *Dado* un estilo sin nombre o sin descripción, *cuando* se envía, *entonces* el sistema responde `HTTP 422` y no lo guarda.
+  * **CA-33.3:** *Dado* un estilo existente, *cuando* el administrador cambia su nombre, descripción o foto, *entonces* el cliente ve los datos actualizados; dejar la foto vacía la quita.
+  * **CA-33.4:** *Dado* un estilo que algunas citas ya eligieron, *cuando* el administrador lo elimina, *entonces* deja de ofrecerse a los clientes y las citas existentes lo conservan.
+  * **CA-33.5:** *Dado* un cliente o un barbero, *cuando* intenta crear, editar o eliminar un estilo, *entonces* el sistema responde `HTTP 403 Forbidden`.
+### 📌 RF-34: Elección del Estilo al Reservar
+* **Descripción:** En el paso de servicios, el sistema debe mostrar al cliente el catálogo de estilos activos (foto, nombre y un botón para ver la descripción en un modal con "X" para cerrar) y pedirle que elija uno. El estilo elegido se guarda en la cita y aparece en la confirmación, en el correo, en "Mis citas" y en la agenda del barbero. Ver la política PN-14.
+* **Criterios de Aceptación:**
+  * **CA-34.1:** *Dado* un catálogo con estilos activos, *cuando* el cliente elige servicios y un estilo y confirma, *entonces* la cita queda guardada con ese estilo.
+  * **CA-34.2:** *Dado* un catálogo con estilos activos, *cuando* el cliente intenta continuar sin elegir estilo, *entonces* la interfaz no avanza y la API responde `HTTP 400` si se envía la cita sin estilo.
+  * **CA-34.3:** *Dado* un estilo inexistente o eliminado, *cuando* el cliente intenta agendar con él, *entonces* el sistema responde `HTTP 404` y no crea la cita.
+  * **CA-34.4:** *Dado* un catálogo sin estilos activos, *cuando* el cliente agenda, *entonces* la sección de estilos no aparece y la cita se crea sin estilo.
+  * **CA-34.5:** *Dado* un estilo con descripción, *cuando* el cliente presiona "Ver descripción", *entonces* se abre un modal con la foto (si tiene), el nombre y la descripción, que se cierra con la "X".
 ---
  
 ## 5. Requisitos No Funcionales (RNF)
@@ -320,7 +370,7 @@ erDiagram
 4. **RNF-04 (Usabilidad):** La interfaz debe adaptarse a celulares, tabletas y computadores.
 5. **RNF-05 (Localización):** Todas las fechas y horas deben manejarse en la zona horaria de Colombia (UTC-5).
 6. **RNF-06 (Datos personales):** El sistema debe mostrar un aviso de privacidad y pedir autorización para tratar datos personales, conforme a la Ley 1581 de 2012.
-7. **RNF-07 (Integridad y Consistencia):** La base de datos debe aplicar restricciones de clave foránea (`FOREIGN KEY`) entre Citas, Barberos, Servicios y Usuarios.
+7. **RNF-07 (Integridad y Consistencia):** La base de datos debe aplicar restricciones de clave foránea (`FOREIGN KEY`) entre Citas, Barberos, Servicios, Estilos y Usuarios.
 8. **RNF-08 (Rendimiento):** El endpoint de consulta de disponibilidad debe resolver los bloques libres/ocupados en menos de 300 ms.
 9. **RNF-09 (Mantenibilidad y Arquitectura):** Separación de capas en Backend (Modelos, Esquemas Pydantic, Controladores/Rutas, Repositorios/Servicios).
 10. **RNF-10 (Seguridad, código y datos):** Ausencia total de credenciales y variables de entorno en el control de versiones. Uso estricto de `.env.example` y sanitización de entradas contra inyecciones SQL a través de SQLAlchemy ORM.
@@ -334,7 +384,7 @@ Los valores de esta sección pueden cambiar sin modificar los requisitos que los
 |---|---|---|
 | PN-01 | Vigencia del enlace de recuperación de contraseña | 1 hora *(propuesto)* |
 | PN-02 | Intervalo de los horarios disponibles | 30 minutos *(propuesto)* |
-| PN-03 | Horas de cada franja | Mañana 6:00-12:00, Tarde 12:00-18:00, Noche 18:00-22:00 *(propuesto)* |
+| PN-03 | Horas de cada franja | Mañana 6:00-12:00, Tarde 12:00-18:00, Noche 18:00-22:00 *(propuesto)*. Desde la v1.2 la interfaz no pide franja: muestra el día completo; la franja queda como filtro opcional de la API |
 | PN-04 | Anticipación mínima para cancelar una cita | 12 horas |
 | PN-05 | Anticipación mínima y número máximo de reprogramaciones | 12 horas; una sola reprogramación por cita |
 | PN-06 | Desde cuándo el barbero puede marcar el estado de una cita | Desde la hora de inicio de la cita *(propuesto)* |
@@ -345,5 +395,6 @@ Los valores de esta sección pueden cambiar sin modificar los requisitos que los
 | PN-11 | Forma de pago | En el local |
 | PN-12 | Servicios y precios | Todos los barberos ofrecen todos los servicios al mismo precio |
 | PN-13 | Cuenta inicial del administrador | La crea el programador y se la entrega al administrador |
+| PN-14 | Obligatoriedad del estilo | Si hay al menos un estilo activo, el cliente debe elegir uno para agendar. Si el catálogo está vacío, puede agendar sin estilo *(propuesto)* |
  
 ---

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CheckCircle2, XCircle, Copy, Check, Calendar, Clock, User, Scissors, Wallet, Mail } from 'lucide-react';
+import { CheckCircle2, XCircle, Copy, Check, Calendar, Clock, User, Scissors, Wallet, Mail, Sparkles } from 'lucide-react';
 import { claseEstado, formatearFecha, formatearHora, formatearPrecio, TEXTOS_POLITICAS } from '../formato';
 
 // Mensajes según la operación realizada. La información mostrada sale de la CitaResponse real del backend.
@@ -96,6 +96,14 @@ export default function SuccessModal({ cita, tipo = 'agendada', onClose }) {
               ))}
             </ul>
           </div>
+          {cita.estilo && (
+            <div className="flex items-center justify-between text-slate-300">
+              <span className="flex items-center gap-2 text-slate-400 text-xs">
+                <Sparkles className="w-3.5 h-3.5" /> Estilo:
+              </span>
+              <span className="font-semibold text-white">{cita.estilo.nombre}</span>
+            </div>
+          )}
           <div className="flex items-center justify-between text-slate-300">
             <span className="flex items-center gap-2 text-slate-400 text-xs">
               <User className="w-3.5 h-3.5" /> Barbero:

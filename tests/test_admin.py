@@ -58,6 +58,60 @@ def test_cp_rf06_3_barbero_inexistente(client, h_admin):
     assert client.patch("/api/admin/barberos/999", json={"nombre": "Nadie Aquí"}, headers=h_admin).status_code == 404
 
 
+def test_cp_rf06_4_modificar_los_cuatro_campos(client, h_admin, barbero):
+    """v1.2: el administrador modifica nombre, correo, contraseña y foto en una sola petición."""
+    r = client.patch(f"/api/admin/barberos/{barbero.id}", headers=h_admin, json={
+        "nombre": "Mateo Nuevo", "email": "  Mateo.Nuevo@Test.com ", "password": "OtraClave#2030",
+        "foto_url": "https://x.test/mateo.jpg",
+    })
+    assert r.status_code == 200, r.text
+    assert (r.json()["nombre"], r.json()["email"], r.json()["foto_url"]) == (
+        "Mateo Nuevo", "mateo.nuevo@test.com", "https://x.test/mateo.jpg")  # el correo se guarda normalizado
+    assert "password" not in r.json() and "password_hash" not in r.json()
+    # Ingresa con el correo y la contraseña nuevos; los anteriores ya no sirven
+    assert client.post("/api/auth/login", json={"email": "mateo.nuevo@test.com", "password": "OtraClave#2030"}
+                       ).status_code == 200
+    assert client.post("/api/auth/login", json={"email": "mateo@test.com", "password": CLAVE}).status_code == 401
+    assert client.post("/api/auth/login", json={"email": "mateo.nuevo@test.com", "password": CLAVE}).status_code == 401
+
+
+def test_cp_rf06_5_correo_de_otra_cuenta_no_se_acepta(client, h_admin, barbero, otro_barbero, cliente):
+    for email in ("carlos@test.com", "CLIENTE@test.com"):
+        r = client.patch(f"/api/admin/barberos/{barbero.id}", json={"email": email}, headers=h_admin)
+        assert r.status_code == 400 and "ya existe" in r.json()["detail"].lower(), email
+    # Volver a enviar su propio correo (aunque cambie mayúsculas) no es un conflicto
+    assert client.patch(f"/api/admin/barberos/{barbero.id}", json={"email": "MATEO@test.com"},
+                        headers=h_admin).status_code == 200
+    assert client.post("/api/auth/login", json={"email": "mateo@test.com", "password": CLAVE}).status_code == 200
+
+
+def test_cp_rf06_6_correo_o_contrasena_no_validos(client, h_admin, barbero):
+    for cambio in ({"email": "no-es-correo"}, {"email": None}, {"email": ""}, {"password": "corta"},
+                   {"password": None}, {"password": "x" * 129}):
+        r = client.patch(f"/api/admin/barberos/{barbero.id}", json=cambio, headers=h_admin)
+        assert r.status_code == 422, cambio
+    assert client.post("/api/auth/login", json={"email": "mateo@test.com", "password": CLAVE}).status_code == 200
+
+
+def test_cp_rf06_7_cambiar_la_contrasena_cierra_las_sesiones_del_barbero(client, h_admin, h_barbero, barbero):
+    assert client.get("/api/barbero/agenda", headers=h_barbero).status_code == 200
+    r = client.patch(f"/api/admin/barberos/{barbero.id}", json={"password": "OtraClave#2030"}, headers=h_admin)
+    assert r.status_code == 200
+    assert client.get("/api/barbero/agenda", headers=h_barbero).status_code == 401
+    # Cambiar solo el nombre o la foto no cierra la sesión
+    h = client.post("/api/auth/login", json={"email": "mateo@test.com", "password": "OtraClave#2030"}).json()
+    h = {"Authorization": f"Bearer {h['access_token']}"}
+    assert client.patch(f"/api/admin/barberos/{barbero.id}", json={"nombre": "Mateo Dos"}, headers=h_admin).status_code == 200
+    assert client.get("/api/barbero/agenda", headers=h).status_code == 200
+
+
+def test_cp_rf06_8_quitar_la_foto(client, h_admin, barbero):
+    client.patch(f"/api/admin/barberos/{barbero.id}", json={"foto_url": "https://x.test/a.jpg"}, headers=h_admin)
+    for vacio in ("", "   ", None):
+        r = client.patch(f"/api/admin/barberos/{barbero.id}", json={"foto_url": vacio}, headers=h_admin)
+        assert r.status_code == 200 and r.json()["foto_url"] is None, vacio
+
+
 # ---------- RF-07 Eliminación de barberos ----------
 def test_cp_rf07_1_baja_cancela_citas_futuras_conserva_historial_y_avisa(
     client, db, reloj, h_admin, h_cliente, barbero, cliente, otro_cliente, corte, correos
@@ -147,6 +201,24 @@ def test_cp_rf08_9_valores_no_numericos(client, h_admin):
     assert crear(client, h_admin, nombre="Precio texto", precio="abc").status_code == 422
 
 
+def test_cp_rf08_10_descripcion_opcional(client, h_admin, h_cliente):
+    """v1.2: la descripción es opcional; el cliente la recibe en el catálogo para mostrarla en un modal."""
+    con = crear(client, h_admin, nombre="Con descripcion", descripcion="  Incluye toalla caliente.  ")
+    sin = crear(client, h_admin, nombre="Sin descripcion")
+    vacia = crear(client, h_admin, nombre="Descripcion vacia", descripcion="   ")
+    assert (con.status_code, sin.status_code, vacia.status_code) == (201, 201, 201)
+    assert con.json()["descripcion"] == "Incluye toalla caliente."
+    assert sin.json()["descripcion"] is None and vacia.json()["descripcion"] is None
+    catalogo = {s["nombre"]: s for s in client.get("/api/servicios", headers=h_cliente).json()}
+    assert catalogo["Con descripcion"]["descripcion"] == "Incluye toalla caliente."
+    assert catalogo["Sin descripcion"]["descripcion"] is None
+
+
+def test_cp_rf08_11_descripcion_demasiado_larga(client, h_admin):
+    assert crear(client, h_admin, nombre="Larga", descripcion="x" * 1001).status_code == 422
+    assert crear(client, h_admin, nombre="Justa", descripcion="x" * 1000).status_code == 201
+
+
 # ---------- RF-09 Modificación de servicios ----------
 def test_cp_rf09_1_cambio_de_precio_no_altera_citas_existentes(
     client, h_admin, h_cliente, h_otro_cliente, barbero, corte, reloj
@@ -172,6 +244,16 @@ def test_cp_rf09_2_nombre_vacio(client, h_admin, corte):
 
 def test_cp_rf09_3_servicio_inexistente(client, h_admin):
     assert client.patch("/api/admin/servicios/999", json={"nombre": "Nada Aquí"}, headers=h_admin).status_code == 404
+
+
+def test_cp_rf09_4_agregar_cambiar_y_quitar_la_descripcion(client, h_admin, corte):
+    url = f"/api/admin/servicios/{corte.id}"
+    r = client.patch(url, json={"descripcion": "Corte con máquina y tijera."}, headers=h_admin)
+    assert r.status_code == 200 and r.json()["descripcion"] == "Corte con máquina y tijera."
+    # Modificar otro campo no borra la descripción
+    assert client.patch(url, json={"precio": "21000"}, headers=h_admin).json()["descripcion"] == "Corte con máquina y tijera."
+    for vacio in (None, "", "  "):
+        assert client.patch(url, json={"descripcion": vacio}, headers=h_admin).json()["descripcion"] is None, vacio
 
 
 # ---------- RF-10 Eliminación de servicios ----------
@@ -231,6 +313,10 @@ def test_cp_rnf03_2_cliente_y_barbero_no_acceden_al_panel_de_administracion(clie
         assert client.post("/api/admin/servicios", json={"nombre": "X Y", "duracion_minutos": 10, "precio": "1"},
                            headers=h).status_code == 403
         assert client.delete("/api/admin/servicios/1", headers=h).status_code == 403
+        assert client.post("/api/admin/estilos", json={"nombre": "Fade", "descripcion": "Degradado"},
+                           headers=h).status_code == 403
+        assert client.patch("/api/admin/estilos/1", json={"nombre": "Otro"}, headers=h).status_code == 403
+        assert client.delete("/api/admin/estilos/1", headers=h).status_code == 403
 
 
 def test_cp_rnf03_3_cada_rol_solo_usa_sus_endpoints(client, h_admin, h_cliente, h_barbero):

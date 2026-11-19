@@ -1,4 +1,4 @@
-// Cliente HTTP centralizado de BarberShop Pro (backend v1.1).
+// Cliente HTTP centralizado de BarberShop Pro (backend v1.2).
 //
 // Todas las llamadas al backend pasan por este módulo: URL base, cabecera de autenticación
 // (Authorization: Bearer <token>, ver `obtener_usuario_actual` en main.py), almacenamiento del token,
@@ -91,7 +91,8 @@ const ETIQUETAS_CAMPO = {
   hora_inicio: 'La hora de inicio',
   hora_fin: 'La hora de fin',
   dia_semana: 'El día de la semana',
-  notas: 'Las notas',
+  descripcion: 'La descripción',
+  estilo_id: 'El estilo',
   servicios_ids: 'Los servicios',
   barbero_id: 'El barbero',
   estado: 'El estado',
@@ -251,7 +252,7 @@ const patch = (ruta, cuerpo) => solicitar('PATCH', ruta, { cuerpo });
 const del = (ruta) => solicitar('DELETE', ruta);
 
 // ---------------------------------------------------------------------------
-// Endpoints del backend v1.1 (main.py)
+// Endpoints del backend v1.2 (main.py)
 // ---------------------------------------------------------------------------
 export const api = {
   // Autenticación (RF-01 a RF-04)
@@ -265,12 +266,14 @@ export const api = {
   // Catálogo (cliente o administrador)
   barberos: () => get('/barberos'),
   servicios: () => get('/servicios'),
+  estilos: () => get('/estilos'),
 
-  // Agendamiento (cliente)
+  // Agendamiento (cliente). Desde la v1.2 la franja es opcional: sin ella llegan todos los turnos del día.
   resumenCita: (serviciosIds) => get('/citas/resumen', { servicios_ids: serviciosIds }),
   disponibilidad: ({ barberoId, fecha, franja, serviciosIds }) =>
     get('/disponibilidad', { barbero_id: barberoId, fecha, franja, servicios_ids: serviciosIds }),
-  crearCita: (datos) => post('/citas', datos),
+  crearCita: ({ barbero_id, servicios_ids, estilo_id, fecha, hora_inicio }) =>
+    post('/citas', { barbero_id, servicios_ids, estilo_id: estilo_id ?? null, fecha, hora_inicio }),
 
   // Gestión de citas (cliente)
   misCitas: () => get('/citas/mias'),
@@ -296,5 +299,8 @@ export const api = {
   adminCrearServicio: (datos) => post('/admin/servicios', datos),
   adminActualizarServicio: (id, datos) => patch(`/admin/servicios/${id}`, datos),
   adminEliminarServicio: (id) => del(`/admin/servicios/${id}`),
+  adminCrearEstilo: (datos) => post('/admin/estilos', datos),
+  adminActualizarEstilo: (id, datos) => patch(`/admin/estilos/${id}`, datos),
+  adminEliminarEstilo: (id) => del(`/admin/estilos/${id}`),
   adminCitas: ({ barberoId, fecha, estado }) => get('/admin/citas', { barbero_id: barberoId, fecha, estado }),
 };

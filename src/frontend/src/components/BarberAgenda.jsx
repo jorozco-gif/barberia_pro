@@ -14,6 +14,7 @@ import {
   ChevronRight,
   Ban,
   MessageSquare,
+  Sparkles,
 } from 'lucide-react';
 import { api } from '../api';
 import {
@@ -212,6 +213,12 @@ function PanelAgenda() {
                               <Scissors className="w-3.5 h-3.5 text-amber-400" />
                               {(cita.servicios || []).map((s) => s.servicio?.nombre || 'Servicio').join(', ')}
                             </span>
+                            {cita.estilo && (
+                              <span className="flex items-center gap-1.5 text-slate-200">
+                                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                                Estilo: <strong className="font-semibold">{cita.estilo.nombre}</strong>
+                              </span>
+                            )}
                             <span className="flex items-center gap-1.5">
                               <Phone className="w-3.5 h-3.5 text-slate-400" />
                               {cita.cliente?.telefono}
@@ -223,6 +230,7 @@ function PanelAgenda() {
                             <span className="font-semibold text-emerald-400">{formatearPrecio(cita.total)}</span>
                           </div>
 
+                          {/* Notas de citas agendadas antes de v1.2 (ahora el cliente elige un estilo) */}
                           {cita.notas && (
                             <p className="text-xs text-slate-400/80 bg-slate-950/60 p-2 rounded-lg mt-2 border border-slate-800/80 flex items-start gap-1.5">
                               <MessageSquare className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />

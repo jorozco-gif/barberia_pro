@@ -157,6 +157,18 @@ def test_cp_rf24_8_horarios_disponibles_para_reprogramar(client, db, reloj, h_cl
                       params={"fecha": reloj.en(1).isoformat(), "franja": "Mañana"}).status_code == 400
 
 
+def test_cp_rf24_9_reprogramar_sin_franja_muestra_todo_el_dia(client, db, reloj, h_cliente, h_otro_cliente, cliente, otro_cliente, barbero, corte):
+    """v1.2: como en la reserva, la reprogramación muestra todos los horarios libres del día sin pedir franja."""
+    cita = crear_cita(db, cliente, barbero, corte, reloj.en(1), "10:00")
+    crear_cita(db, otro_cliente, barbero, corte, reloj.en(1), "15:00")
+    r = client.get(f"/api/citas/{cita.id}/disponibilidad", headers=h_cliente, params={"fecha": reloj.en(1).isoformat()})
+    assert r.status_code == 200
+    inicios = [s["hora_inicio"] for s in r.json() if s["disponible"]]
+    assert inicios[0] == "08:00" and inicios[-1] == "19:30"  # mañana, tarde y noche en una sola lista
+    assert "10:00" in inicios and "15:00" not in inicios  # su propio horario sigue libre; el ajeno no
+    assert len(inicios) == 23
+
+
 # ---------- RF-25 Correos de cancelación y reprogramación ----------
 def test_cp_rf25_1_cancelar_avisa_al_cliente_y_al_barbero(client, db, reloj, h_cliente, cliente, barbero, corte, correos):
     cita = crear_cita(db, cliente, barbero, corte, reloj.en(1), "15:00")

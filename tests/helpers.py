@@ -47,11 +47,21 @@ def crear_barbero(db, email="mateo@test.com", nombre="Mateo Maestro", horario=Tr
     return barbero
 
 
-def crear_servicio(db, nombre="Corte", duracion=30, precio="20000") -> models.Servicio:
-    servicio = models.Servicio(nombre=nombre, duracion_minutos=duracion, precio=Decimal(precio), activo=True)
+def crear_servicio(db, nombre="Corte", duracion=30, precio="20000", descripcion=None) -> models.Servicio:
+    servicio = models.Servicio(
+        nombre=nombre, duracion_minutos=duracion, precio=Decimal(precio), descripcion=descripcion, activo=True,
+    )
     db.add(servicio)
     db.commit()
     return servicio
+
+
+def crear_estilo(db, nombre="Fade bajo", descripcion="Degradado bajo cerca de la oreja.", foto_url=None,
+                 activo=True) -> models.Estilo:
+    estilo = models.Estilo(nombre=nombre, descripcion=descripcion, foto_url=foto_url, activo=activo)
+    db.add(estilo)
+    db.commit()
+    return estilo
 
 
 def crear_cita(

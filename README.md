@@ -102,6 +102,18 @@ gestor-barberia/
    * **API Base:** `http://127.0.0.1:8000`
    * **Documentación interactiva Swagger / OpenAPI:** `http://127.0.0.1:8000/docs`
 
+6. **Actualizar una base de datos de la v1.1 a la v1.2** (solo si ya tenías datos):
+   * Al arrancar, la API (y también `python seed.py`) aplica automáticamente los cambios pendientes del esquema sin borrar datos. Para hacerlo a mano:
+     ```bash
+     python migrar.py
+     ```
+   * Si prefieres SQL, aplica **una sola vez** el script de tu motor, después de sacar una copia de seguridad:
+     ```bash
+     mysql -u <usuario> -p <base_de_datos> < migraciones/v1_2_mysql.sql   # MySQL / MariaDB
+     sqlite3 barberia.db < migraciones/v1_2_sqlite.sql                     # SQLite
+     ```
+   * Cambios: tabla `estilos`, columna `servicios.descripcion` y columna `citas.estilo_id` (clave foránea hacia `estilos`). La columna `citas.notas` se conserva para el historial.
+
 ---
 
 ### 2. Ejecución de Pruebas Automatizadas
@@ -111,6 +123,12 @@ Para validar los casos de prueba unitarios y de lógica de negocio (como detecci
 ```bash
 # Estando en la raíz del proyecto o en src/backend con el entorno virtual activo:
 pytest tests/ -v
+```
+
+Las pruebas unitarias del frontend (cliente de la API y estado del asistente de reserva) se ejecutan con:
+
+```bash
+cd src/frontend && npm test
 ```
 
 ---
@@ -132,6 +150,20 @@ pytest tests/ -v
    npm run dev
    ```
    * **Aplicación Web:** `http://localhost:5173`
+
+---
+
+## 🆕 Novedades de la versión 1.2
+
+* **Nuevo orden del agendamiento:** Barbero → Servicios → Fecha y Hora → Confirmación. La reserva en curso se guarda en un contexto global (`BookingContext`), incluido el estilo elegido.
+* **Servicios con descripción:** campo opcional que el administrador llena al crear o editar; el cliente la abre en una ventana flotante.
+* **Catálogo de estilos:** nuevo módulo del administrador (listar, crear, editar y eliminar) con nombre, descripción y foto opcional. El cliente elige un estilo junto a los servicios y puede ver su descripción en una ventana flotante.
+* **Turnos del día completo:** al elegir la fecha se muestran todos los turnos libres, sin botones de Mañana, Tarde o Noche.
+* **Confirmación sin notas:** la personalización la da el estilo elegido.
+* **Edición completa de barberos:** el administrador modifica nombre, correo, contraseña y foto.
+* **Nuevos endpoints:** `GET /api/estilos`, `POST /api/admin/estilos`, `PATCH /api/admin/estilos/{id}`, `DELETE /api/admin/estilos/{id}`. `POST /api/citas` recibe `estilo_id`; `PATCH /api/admin/barberos/{id}` acepta `email` y `password`; la `franja` de las consultas de disponibilidad pasa a ser opcional.
+
+Detalle en [`docs/especificacion.md`](docs/especificacion.md) (RF-06, RF-08, RF-09, RF-13 a RF-19, RF-24, RF-33, RF-34 y PN-14) y en [`docs/plan-de-pruebas.md`](docs/plan-de-pruebas.md).
 
 ---
 

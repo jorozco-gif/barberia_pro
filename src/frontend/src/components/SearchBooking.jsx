@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Calendar, Clock, Scissors, User, Phone, Mail, Wallet, X, RefreshCw, MessageSquare } from 'lucide-react';
+import { Search, Calendar, Clock, Scissors, User, Phone, Mail, Wallet, X, RefreshCw, MessageSquare, Sparkles } from 'lucide-react';
 import { api } from '../api';
 import { useAuth } from '../AuthContext';
 import { ROLES } from '../roles';
 import {
   ESTADOS_CITA,
-  FRANJAS,
   TEXTOS_POLITICAS,
   claseEstado,
   formatearFecha,
@@ -14,6 +13,7 @@ import {
   hoyColombia,
 } from '../formato';
 import Alerta from './Alerta';
+import FotoEstilo from './FotoEstilo';
 
 const CLASE_CONTROL =
   'px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-white text-sm focus:border-amber-500 focus:outline-none';
@@ -60,6 +60,18 @@ function TarjetaCita({ cita, modo, children }) {
             ))}
           </ul>
         </div>
+
+        {cita.estilo && (
+          <div>
+            <span className="text-slate-400 flex items-center gap-1.5 mb-1">
+              <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Estilo
+            </span>
+            <div className="flex items-center gap-2">
+              <FotoEstilo fotoUrl={cita.estilo.foto_url} className="w-7 h-7 rounded-lg border border-slate-700" iconoClassName="w-3.5 h-3.5" />
+              <p className="font-semibold text-white text-sm">{cita.estilo.nombre}</p>
+            </div>
+          </div>
+        )}
 
         <div>
           <span className="text-slate-400 flex items-center gap-1.5 mb-1">
@@ -108,6 +120,7 @@ function TarjetaCita({ cita, modo, children }) {
         )}
       </div>
 
+      {/* Notas de citas agendadas antes de v1.2 (el asistente actual usa el estilo en su lugar) */}
       {cita.notas && (
         <p className="text-xs text-slate-400/80 bg-slate-950/60 p-2 rounded-lg border border-slate-800/80 flex items-start gap-1.5">
           <MessageSquare className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
@@ -123,11 +136,11 @@ function TarjetaCita({ cita, modo, children }) {
 }
 
 // ---------------------------------------------------------------------------
-// Reprogramación (RF-24): el cliente elige un nuevo horario libre del mismo barbero
+// Reprogramación (RF-24): el cliente elige un nuevo horario libre del mismo barbero.
+// v1.2: como en la reserva, al elegir la fecha se muestran todos los horarios libres del día (sin franja).
 // ---------------------------------------------------------------------------
 function ReprogramarModal({ cita, onCerrar, onReprogramada }) {
   const [fecha, setFecha] = useState(cita.fecha);
-  const [franja, setFranja] = useState('');
   const [slots, setSlots] = useState([]);
   const [loadingSlots, setLoadingSlots] = useState(false);
   const [errorSlots, setErrorSlots] = useState('');
@@ -139,14 +152,14 @@ function ReprogramarModal({ cita, onCerrar, onReprogramada }) {
   useEffect(() => {
     setSlot(null);
     setErrorSlots('');
-    if (!fecha || !franja) {
+    if (!fecha) {
       setSlots([]);
       return undefined;
     }
     let activo = true;
     setLoadingSlots(true);
     api
-      .disponibilidadReprogramacion(cita.id, { fecha, franja })
+      .disponibilidadReprogramacion(cita.id, { fecha })
       .then((data) => activo && setSlots(data.filter((s) => s.disponible)))
       .catch((err) => {
         if (!activo) return;
@@ -157,7 +170,7 @@ function ReprogramarModal({ cita, onCerrar, onReprogramada }) {
     return () => {
       activo = false;
     };
-  }, [cita.id, fecha, franja, recarga]);
+  }, [cita.id, fecha, recarga]);
 
   const confirmar = async () => {
     setError('');
@@ -197,56 +210,34 @@ function ReprogramarModal({ cita, onCerrar, onReprogramada }) {
           {TEXTOS_POLITICAS.anticipacion} {TEXTOS_POLITICAS.reprogramacion}
         </p>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-          <div>
-            <label htmlFor="rep-fecha" className="block text-xs uppercase tracking-wider text-slate-400 font-semibold mb-2">
-              Nueva fecha
-            </label>
-            <input
-              id="rep-fecha"
-              type="date"
-              value={fecha}
-              min={hoyColombia()}
-              onChange={(e) => {
-                setError('');
-                setFecha(e.target.value);
-              }}
-              className={`w-full ${CLASE_CONTROL}`}
-            />
-          </div>
-          <div>
-            <span className="block text-xs uppercase tracking-wider text-slate-400 font-semibold mb-2">Franja</span>
-            <div className="flex gap-2" role="group" aria-label="Franja del día">
-              {FRANJAS.map((f) => (
-                <button
-                  type="button"
-                  key={f}
-                  onClick={() => setFranja(f)}
-                  aria-pressed={franja === f}
-                  className={`flex-1 px-2 py-2 rounded-xl border text-sm font-medium transition ${
-                    franja === f
-                      ? 'bg-amber-500 text-slate-950 font-bold border-amber-500'
-                      : 'bg-slate-950 border-slate-800 text-slate-200 hover:border-slate-700'
-                  }`}
-                >
-                  {f}
-                </button>
-              ))}
-            </div>
-          </div>
+        <div className="mb-4">
+          <label htmlFor="rep-fecha" className="block text-xs uppercase tracking-wider text-slate-400 font-semibold mb-2">
+            Nueva fecha
+          </label>
+          <input
+            id="rep-fecha"
+            type="date"
+            value={fecha}
+            min={hoyColombia()}
+            onChange={(e) => {
+              setError('');
+              setFecha(e.target.value);
+            }}
+            className={`w-full sm:w-64 ${CLASE_CONTROL}`}
+          />
         </div>
 
         <Alerta tipo="error" className="mb-4">{errorSlots}</Alerta>
 
         <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4 mb-4">
-          {!franja ? (
-            <p className="py-4 text-center text-slate-500 text-sm">Elige una franja del día para ver los horarios.</p>
+          {!fecha ? (
+            <p className="py-4 text-center text-slate-500 text-sm">Elige una fecha para ver los horarios.</p>
           ) : loadingSlots ? (
             <p className="py-4 text-center text-slate-400 text-sm">Consultando disponibilidad...</p>
           ) : slots.length === 0 ? (
             !errorSlots && (
               <p className="py-4 text-center text-slate-500 text-sm">
-                No hay horarios disponibles en esa fecha y franja.
+                No hay horarios disponibles en esa fecha. Prueba con otro día.
               </p>
             )
           ) : (

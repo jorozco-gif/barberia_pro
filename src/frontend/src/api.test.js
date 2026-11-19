@@ -110,12 +110,54 @@ test('servicios_ids se envía como parámetro repetido y los vacíos se omiten',
   assert.equal(u2.searchParams.get('estado'), 'Cancelada');
 });
 
-test('POST /citas envía los nombres de campo del esquema CitaCreate', async () => {
+test('POST /citas envía los nombres de campo del esquema CitaCreate (v1.2: estilo_id, sin notas)', async () => {
   reiniciar();
   simularRespuesta(201, { id: 1 });
-  await api.crearCita({ barbero_id: 1, servicios_ids: [1, 2], fecha: '2030-01-07', hora_inicio: '10:00', notas: null });
+  await api.crearCita({ barbero_id: 1, servicios_ids: [1, 2], estilo_id: 4, fecha: '2030-01-07', hora_inicio: '10:00', notas: 'x' });
   assert.equal(llamadas[0].opciones.method, 'POST');
-  assert.deepEqual(Object.keys(JSON.parse(llamadas[0].opciones.body)).sort(), ['barbero_id', 'fecha', 'hora_inicio', 'notas', 'servicios_ids']);
+  const cuerpo = JSON.parse(llamadas[0].opciones.body);
+  assert.deepEqual(Object.keys(cuerpo).sort(), ['barbero_id', 'estilo_id', 'fecha', 'hora_inicio', 'servicios_ids']);
+  assert.equal(cuerpo.estilo_id, 4);
+
+  // Sin catálogo de estilos el cliente no elige ninguno: se envía null y el backend lo acepta (PN-14)
+  await api.crearCita({ barbero_id: 1, servicios_ids: [1], fecha: '2030-01-07', hora_inicio: '10:00' });
+  assert.equal(JSON.parse(llamadas[1].opciones.body).estilo_id, null);
+});
+
+test('disponibilidad sin franja pide todos los turnos del día', async () => {
+  reiniciar();
+  simularRespuesta(200, []);
+  await api.disponibilidad({ barberoId: 2, fecha: '2030-01-07', serviciosIds: [1] });
+  const url = new URL(llamadas[0].url);
+  assert.equal(url.searchParams.has('franja'), false);
+  assert.equal(url.searchParams.get('fecha'), '2030-01-07');
+});
+
+test('rutas del catálogo y del CRUD de estilos', async () => {
+  reiniciar();
+  simularRespuesta(200, {});
+  await api.estilos();
+  await api.adminCrearEstilo({ nombre: 'Fade', descripcion: 'Degradado', foto_url: null });
+  await api.adminActualizarEstilo(3, { nombre: 'Fade bajo' });
+  await api.adminEliminarEstilo(3);
+  const rutas = llamadas.map((l) => [l.opciones.method, new URL(l.url).pathname.replace(/^.*\/api/, '')]);
+  assert.deepEqual(rutas, [
+    ['GET', '/estilos'],
+    ['POST', '/admin/estilos'],
+    ['PATCH', '/admin/estilos/3'],
+    ['DELETE', '/admin/estilos/3'],
+  ]);
+});
+
+test('422 de estilo y descripción se traducen con su etiqueta', () => {
+  const texto = mensajeDeRespuesta(422, {
+    detail: [
+      { type: 'string_too_long', loc: ['body', 'descripcion'], msg: 'too long', ctx: { max_length: 1000 } },
+      { type: 'greater_than', loc: ['body', 'estilo_id'], msg: 'gt', ctx: { gt: 0 } },
+    ],
+  });
+  assert.match(texto, /La descripción no puede superar 1000 caracteres\./);
+  assert.match(texto, /El estilo debe ser mayor que 0\./);
 });
 
 test('401 en ruta protegida limpia la sesión y avisa al AuthContext', async () => {

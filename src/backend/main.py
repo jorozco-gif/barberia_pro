@@ -10,7 +10,8 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from database import engine, Base, get_db
+from database import engine, get_db
+import migrar
 import schemas
 import services
 from models import Usuario, ROL_ADMIN, ROL_BARBERO, ROL_CLIENTE
@@ -21,15 +22,15 @@ from models import Usuario, ROL_ADMIN, ROL_BARBERO, ROL_CLIENTE
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Crear tablas automáticamente al arrancar la aplicación si no existen
-    Base.metadata.create_all(bind=engine)
+    # Crea las tablas que no existan y aplica los cambios de la v1.2 a una base de la v1.1 (migrar.py)
+    migrar.actualizar_esquema(engine)
     yield
 
 
 app = FastAPI(
     title="BarberShop Pro API",
     description="API REST para la gestión integral de citas, barberos y servicios.",
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan
 )
 
@@ -94,7 +95,7 @@ def health_check():
     return {
         "status": "online",
         "app": "BarberShop Pro API",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "docs_url": "/docs"
     }
 
@@ -143,7 +144,7 @@ def restablecer_password(datos: schemas.RestablecerPassword, db: Session = Depen
 
 
 # ==========================================
-# Catálogo: barberos y servicios visibles (RF-13, RF-14)
+# Catálogo: barberos, servicios y estilos visibles (RF-13, RF-14, RF-34)
 # ==========================================
 @app.get("/api/barberos", response_model=List[schemas.BarberoPublico], tags=["Catálogo"])
 def listar_barberos(_usuario: Usuario = Depends(cliente_o_admin), db: Session = Depends(get_db)):
@@ -155,8 +156,13 @@ def listar_servicios(_usuario: Usuario = Depends(cliente_o_admin), db: Session =
     return services.listar_servicios(db)
 
 
+@app.get("/api/estilos", response_model=List[schemas.EstiloResponse], tags=["Catálogo"])
+def listar_estilos(_usuario: Usuario = Depends(cliente_o_admin), db: Session = Depends(get_db)):
+    return services.listar_estilos(db)
+
+
 # ==========================================
-# Administrador: barberos, servicios y citas (RF-05 a RF-10, RF-28)
+# Administrador: barberos, servicios, estilos y citas (RF-05 a RF-10, RF-28, RF-33)
 # ==========================================
 @app.get("/api/admin/barberos", response_model=List[schemas.BarberoResponse], tags=["Administrador"])
 def admin_listar_barberos(_admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db)):
@@ -207,6 +213,29 @@ def admin_eliminar_servicio(
     servicio_id: int, _admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db)
 ):
     return services.eliminar_servicio(db, servicio_id)
+
+
+@app.post("/api/admin/estilos", response_model=schemas.EstiloResponse,
+          status_code=status.HTTP_201_CREATED, tags=["Administrador"])
+def admin_crear_estilo(
+    datos: schemas.EstiloCreate, _admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db)
+):
+    return services.crear_estilo(db, datos)
+
+
+@app.patch("/api/admin/estilos/{estilo_id}", response_model=schemas.EstiloResponse, tags=["Administrador"])
+def admin_actualizar_estilo(
+    estilo_id: int, datos: schemas.EstiloUpdate,
+    _admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db),
+):
+    return services.actualizar_estilo(db, estilo_id, datos)
+
+
+@app.delete("/api/admin/estilos/{estilo_id}", response_model=schemas.EstiloResponse, tags=["Administrador"])
+def admin_eliminar_estilo(
+    estilo_id: int, _admin: Usuario = Depends(solo_admin), db: Session = Depends(get_db)
+):
+    return services.eliminar_estilo(db, estilo_id)
 
 
 @app.get("/api/admin/citas", response_model=List[schemas.CitaResponse], tags=["Administrador"])
@@ -297,7 +326,7 @@ def resumen_de_servicios(
 def consultar_disponibilidad(
     barbero_id: int = Query(..., gt=0),
     fecha: datetime.date = Query(...),
-    franja: schemas.Franja = Query(...),
+    franja: Optional[schemas.Franja] = Query(None, description="Opcional desde la v1.2: sin franja, todos los turnos del día"),
     servicios_ids: List[int] = Query(..., min_length=1),
     _cliente: Usuario = Depends(solo_cliente),
     db: Session = Depends(get_db),
@@ -332,7 +361,7 @@ def cancelar_cita(cita_id: int, cliente: Usuario = Depends(solo_cliente), db: Se
 def disponibilidad_para_reprogramar(
     cita_id: int,
     fecha: datetime.date = Query(...),
-    franja: schemas.Franja = Query(...),
+    franja: Optional[schemas.Franja] = Query(None, description="Opcional: sin franja, todos los turnos del día"),
     cliente: Usuario = Depends(solo_cliente),
     db: Session = Depends(get_db),
 ):

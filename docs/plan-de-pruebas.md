@@ -2,8 +2,8 @@
 
 **Proyecto:** BarberShop Pro — Sistema de Gestión y Agendamiento de Barbería
 **Materia:** Ingeniería de Software II (Código 17934) — Cotecnova
-**Versión:** 1.1 (propuesta de modificación sobre la v1.0 del Seguimiento 1)
-**Basado en:** `especificacion-requisitos.md` v1.1
+**Versión:** 1.2 (agendamiento refactorizado y catálogo de estilos, sobre la v1.1)
+**Basado en:** `especificacion-requisitos.md` v1.2
 **Responsable de Pruebas:** Sebastian Orozco
 **Responsable de Calidad:** Juan David Osorio
 **Líder Técnico:** Elizabeth Ramirez
@@ -13,11 +13,11 @@
 
 ## 1. Propósito y Alcance de las Pruebas
 
-Este documento establece la estrategia y el diseño formal de casos de prueba para verificar los requisitos funcionales (RF-01 a RF-30) y no funcionales (RNF-01 a RNF-10) de la especificación v1.1. Cada requisito tiene como mínimo dos casos: uno que el sistema debe permitir y otro que debe rechazar. Los módulos cubiertos son:
+Este documento establece la estrategia y el diseño formal de casos de prueba para verificar los requisitos funcionales (RF-01 a RF-30, RF-33 y RF-34) y no funcionales (RNF-01 a RNF-10) de la especificación v1.2. Cada requisito tiene como mínimo dos casos: uno que el sistema debe permitir y otro que debe rechazar. Los módulos cubiertos son:
 
 1. Cuentas y acceso: registro, inicio y cierre de sesión, recuperación de contraseña.
 2. Validación de entradas en el registro de barberos y en el catálogo de servicios (precios, duraciones).
-3. Disponibilidad del barbero y consulta de horarios libres por fecha y franja del día.
+3. Disponibilidad del barbero y consulta de todos los turnos libres del día (la franja queda como filtro opcional de la API).
 4. Cálculo automático de horarios de cita (`hora_fin = hora_inicio + duración total de los servicios`) y límite de citas activas por cliente.
 5. Detección y prevención estricta de choques de horario (**RF-20**) para un mismo barbero.
 6. Integridad referencial e independencia entre agendas de diferentes barberos.
@@ -26,6 +26,9 @@ Este documento establece la estrategia y el diseño formal de casos de prueba pa
 9. Suspensión del cliente por inasistencias.
 10. Notificaciones por correo electrónico.
 11. Requisitos no funcionales (seguridad, usabilidad, localización, rendimiento y arquitectura).
+12. Catálogo de estilos (RF-33), elección del estilo al reservar (RF-34, PN-14) y descripción opcional de servicios.
+13. Edición completa del barbero (nombre, correo, contraseña y foto).
+14. Migración del esquema v1.1 → v1.2 y estado del asistente de reserva en el frontend.
 
 **Fuera del alcance de este plan:** RF-31 y RF-32 (dashboard y calificaciones, por confirmar) y las notificaciones por SMS/WhatsApp (excluidas hasta la versión 2.0).
 
@@ -120,6 +123,11 @@ También se probaron las fronteras de las políticas del negocio, con un valor j
 | **CP-RF05-3** | RF-05 | Partición Inválida | Registrar un barbero con un correo ya existente. | Rechazado con mensaje de error explicativo. | `400 Bad Request` |
 | **CP-RF06-1** | RF-06 | Partición Válida | Cambiar el nombre y la foto de un barbero y guardar. | Cambios guardados; el cliente ve el perfil actualizado al elegir barbero. | `200 OK` |
 | **CP-RF06-2** | RF-06 | Partición Inválida | Borrar el nombre de un barbero y guardar. | Error de validación; el perfil conserva los datos anteriores. | `422 Unprocessable` |
+| **CP-RF06-4** | RF-06 | Partición Válida | Modificar nombre, correo, contraseña y foto en una sola edición. | Los cuatro campos se guardan; el correo queda normalizado; el barbero solo ingresa con el correo y la contraseña nuevos. | `200 OK` |
+| **CP-RF06-5** | RF-06 | Partición Inválida | Asignar al barbero el correo de otro barbero o de un cliente. | Rechazado; el correo ya está registrado. Reenviar su propio correo no es un conflicto. | `400 Bad Request` |
+| **CP-RF06-6** | RF-06 | Valor Límite | Enviar un correo sin formato, vacío o nulo, o una contraseña de menos de 8 o más de 128 caracteres. | Error de validación; el barbero sigue ingresando con sus datos anteriores. | `422 Unprocessable` |
+| **CP-RF06-7** | RF-06 | Prueba de Seguridad | Cambiar la contraseña de un barbero que tiene la sesión iniciada. | Su sesión abierta se cierra (`401`); cambiar solo el nombre o la foto no la cierra. | `200 OK` |
+| **CP-RF06-8** | RF-06 | Partición Válida | Dejar la foto vacía (`""`, espacios o `null`) y guardar. | La foto se quita y el cliente ve el ícono por defecto. | `200 OK` |
 | **CP-RF07-1** | RF-07 | Partición Válida | Eliminar el perfil de un barbero que tiene citas futuras y pasadas. | Perfil inactivo; citas futuras en `Cancelada`; clientes notificados; historial conservado. | `200 OK` |
 | **CP-RF07-2** | RF-07 | Partición Inválida | Un barbero con perfil eliminado intenta iniciar sesión. | No puede ingresar. | `401 Unauthorized` |
 
@@ -136,8 +144,11 @@ También se probaron las fronteras de las políticas del negocio, con un valor j
 | **CP-RF08-7** | RF-08 | Valor Límite | Crear servicio con duración 241 minutos. | Error de validación; supera el máximo. | `422 Unprocessable` |
 | **CP-RF08-8** | RF-08 | Valor Límite | Crear servicio con precio $0. | Servicio persistido (el precio puede ser 0). | `201 Created` |
 | **CP-RF08-9** | RF-08 | Partición Inválida | Crear servicio con duración no numérica (ej. `"abc"`). | Error de validación Pydantic. | `422 Unprocessable` |
+| **CP-RF08-10** | RF-08 | Partición Válida | Crear servicios con descripción, sin descripción y con descripción de solo espacios. | Los tres se guardan; el catálogo del cliente trae la descripción o `null`. | `201 Created` |
+| **CP-RF08-11** | RF-08 | Valor Límite | Crear servicios con descripción de 1000 y de 1001 caracteres. | El de 1000 se guarda; el de 1001 se rechaza. | `201` / `422` |
 | **CP-RF09-1** | RF-09 | Partición Válida | Cambiar el precio de un servicio que tiene citas ya agendadas. | Las citas nuevas usan el precio nuevo; las ya agendadas conservan el anterior. | `200 OK` |
 | **CP-RF09-2** | RF-09 | Partición Inválida | Dejar el nombre del servicio vacío y guardar. | Error de validación; el servicio conserva sus datos anteriores. | `422 Unprocessable` |
+| **CP-RF09-4** | RF-09 | Partición Válida | Agregar, cambiar y borrar la descripción de un servicio; modificar otro campo sin enviarla. | La descripción se actualiza o queda en `null`; modificar el precio no la borra. | `200 OK` |
 | **CP-RF10-1** | RF-10 | Partición Válida | Eliminar un servicio que tiene citas pasadas y citas ya agendadas. | Servicio inactivo; las citas existentes no cambian. | `200 OK` |
 | **CP-RF10-2** | RF-10 | Partición Inválida | Un cliente intenta agendar con un servicio eliminado. | El servicio no aparece en la lista y el sistema rechaza elegirlo. | `404 Not Found` |
 
@@ -159,16 +170,19 @@ También se probaron las fronteras de las políticas del negocio, con un valor j
 | **CP-RF13-2** | RF-13 | Partición Inválida | El cliente abre la lista después de que un barbero fue eliminado. | El barbero eliminado no aparece. | `200 OK` |
 | **CP-RF14-1** | RF-14 | Partición Válida | El cliente elige dos servicios de la lista. | Ambos quedan marcados y puede continuar. | `200 OK` |
 | **CP-RF14-2** | RF-14 | Partición Inválida | El cliente intenta continuar sin elegir ningún servicio. | Aviso de que debe elegir al menos uno; no avanza. | `422 Unprocessable` |
+| **CP-RF14-3** | RF-14 | Prueba de Usabilidad | Con el barbero ya elegido (primer paso), presionar "Ver descripción" en un servicio que la tiene y cerrar con la "X", con Escape y tocando fuera. | Se abre el modal con la descripción; se cierra de las tres formas; los servicios elegidos no cambian. Un servicio sin descripción no muestra el botón. | `—` |
 | **CP-RF15-1** | RF-15 | Partición Válida | Elegir un servicio de $20.000 y 30 min y otro de $10.000 y 15 min. | Total $30.000 y duración total 45 minutos. | `200 OK` |
 | **CP-RF15-2** | RF-15 | Partición Inválida | El cliente quita todos los servicios elegidos e intenta continuar. | Total $0; no permite continuar. | `422 Unprocessable` |
-| **CP-RF16-1** | RF-16 | Partición Válida | El cliente elige una fecha futura. | El sistema la acepta y muestra las franjas del día. | `200 OK` |
+| **CP-RF16-1** | RF-16 | Partición Válida | El cliente elige una fecha futura. | El sistema la acepta y muestra directamente los turnos libres del día. | `200 OK` |
 | **CP-RF16-2** | RF-16 | Partición Inválida | El cliente intenta agendar en una fecha que ya pasó. | Rechazado por fecha en el pasado. | `400 Bad Request` |
 | **CP-RF16-3** | RF-16 | Valor Límite | Agendar hoy con hora de inicio 1 minuto antes de la hora actual. | Rechazado por hora en el pasado. | `400 Bad Request` |
 | **CP-RF16-4** | RF-16 | Valor Límite | Agendar hoy con hora de inicio 1 minuto después de la hora actual, en un horario libre. | Cita aceptada. | `201 Created` |
-| **CP-RF17-1** | RF-17 | Partición Válida | El cliente elige la franja "Tarde". | Toma el rango 12:00 a 18:00 y muestra los horarios de ese rango. | `200 OK` |
-| **CP-RF17-2** | RF-17 | Partición Inválida | El cliente intenta continuar sin elegir franja. | Aviso de que debe elegir una; no avanza. | `422 Unprocessable` |
-| **CP-RF17-3** | RF-17 | Valor Límite | Con la franja "Mañana", el barbero tiene libres 11:30 y 12:00. | Se muestra 11:30; 12:00 no aparece porque pertenece a "Tarde". | `200 OK` |
-| **CP-RF18-1** | RF-18 | Partición Válida | Barbero con horarios libres de 14:00 a 17:00, franja "Tarde" y servicios de 45 min. | Solo se muestran los horarios libres de esa franja que alcanzan para 45 min. | `200 OK` |
+| **CP-RF17-1** | RF-17 | Partición Válida | Consultar sin franja los turnos de un barbero que atiende de 08:00 a 20:00. | Una sola lista de 08:00 a 19:30 (24 turnos), igual a la unión de Mañana, Tarde y Noche. | `200 OK` |
+| **CP-RF17-2** | RF-17 | Partición Inválida | Enviar a la API una franja que no existe (ej. `Madrugada`). | Error de validación. | `422 Unprocessable` |
+| **CP-RF17-3** | RF-17 | Valor Límite | Filtro opcional de la API: con la franja "Mañana", el barbero tiene libres 11:30 y 12:00. | Se muestra 11:30; 12:00 no aparece porque pertenece a "Tarde". | `200 OK` |
+| **CP-RF17-6** | RF-17 | Partición Inválida | Consultar sin franja el día de hoy a las 15:10, con una cita a las 17:00. | No aparecen las horas que ya pasaron ni la reservada. | `200 OK` |
+| **CP-RF17-7** | RF-17 | Prueba de Usabilidad | Elegir un turno y luego cambiar la fecha en el calendario. | El turno elegido se descarta y se muestran los turnos de la nueva fecha, sin botones de franja. | `—` |
+| **CP-RF18-1** | RF-18 | Partición Válida | Barbero con horarios libres de 14:00 a 17:00 y servicios de 45 min. | Solo se muestran los horarios libres que alcanzan para 45 min. | `200 OK` |
 | **CP-RF18-2** | RF-18 | Partición Inválida | Mismo caso, con un horario ya reservado y un último espacio que no alcanza para 45 min. | No se muestran ni el horario reservado ni el espacio insuficiente. | `200 OK` |
 | **CP-RF18-3** | RF-18 | Partición Inválida | Mismo caso, con una hora bloqueada por el barbero (RF-12). | La hora bloqueada no se muestra. | `200 OK` |
 | **CP-RF19-1** | RF-19 | Partición Válida | Un cliente con 1 cita activa elige un horario libre y confirma. | Cita creada en estado `Programada` con código de reserva único (`BSP-...`). | `201 Created` |
@@ -177,6 +191,7 @@ También se probaron las fronteras de las políticas del negocio, con un valor j
 | **CP-RF19-4** | RF-19 | Partición Válida | Un cliente con 1 cita activa y 3 citas en estado `Atendida` agenda otra. | La nueva cita se crea; solo cuentan las citas `Programada`. | `201 Created` |
 | **CP-RF19-5** | RF-19 | Partición Válida | Agendar con el Barbero 1 un servicio de 30 min a las 09:00, en horario libre. | Cita agendada, código `BSP-...` generado, hora de fin 09:30. | `201 Created` |
 | **CP-RF19-6** | RF-19 | Partición Válida | Agendar servicios con duración total de 45 min a las 10:00, en horario libre. | Hora de fin calculada exactamente a las 10:45. | `201 Created` |
+| **CP-RF19-10** | RF-19 | Partición Inválida | Una aplicación anterior envía la cita con el campo `notas`. | La cita se crea y las notas se ignoran (`null`). La confirmación ya no muestra campo de notas. | `201 Created` |
 | **CP-RF20-1** | RF-20 | Partición Válida | El cliente A reserva un horario libre; el cliente B consulta el mismo barbero y fecha. | El horario reservado ya no aparece disponible para B. | `200 OK` |
 | **CP-RF20-2** | RF-20 | Partición Inválida | A y B tienen el mismo horario en pantalla; A confirma y luego B intenta confirmar. | Se acepta la de A (`201`); la de B se rechaza e informa que el horario ya no está disponible. | `409 Conflict` |
 | **CP-RF20-3** | RF-20 | Valor Límite Frontera | Agendar con inicio exactamente a la hora de fin de la anterior (10:30 tras una cita de 10:00 a 10:30). | Permitido. Citas contiguas no colisionan. | `201 Created` |
@@ -201,6 +216,7 @@ También se probaron las fronteras de las políticas del negocio, con un valor j
 | **CP-RF24-2** | RF-24 | Partición Inválida | Reprogramar por segunda vez la misma cita. | Rechazado; ya se usó la reprogramación. | `400 Bad Request` |
 | **CP-RF24-3** | RF-24 | Valor Límite | Reprogramar una cita con 11 h 59 min de anticipación. | Rechazado por falta de anticipación. | `400 Bad Request` |
 | **CP-RF24-4** | RF-24 | Partición Inválida | Reprogramar a un horario que se solapa con otra cita del barbero. | Rechazado por choque de horario. | `409 Conflict` |
+| **CP-RF24-9** | RF-24 | Partición Válida | Consultar sin franja los horarios para reprogramar una cita de las 10:00, con otra cita del barbero a las 15:00. | Una sola lista de 08:00 a 19:30; incluye el horario propio (10:00) y no el ajeno (15:00). | `200 OK` |
 | **CP-RF25-1** | RF-25 | Partición Válida | Cancelar o reprogramar una cita con la anticipación requerida. | Se envía un correo al cliente y otro al barbero. | `200 OK` |
 | **CP-RF25-2** | RF-25 | Partición Inválida | Intentar cancelar con menos de 12 h y que el sistema lo rechace. | No se envía ningún correo. | `400 Bad Request` |
 
@@ -261,6 +277,38 @@ También se probaron las fronteras de las políticas del negocio, con un valor j
 | **CP-RNF10-1** | RNF-10 | Inspección de Código | Revisar el repositorio de control de versiones. | No contiene `.env` ni credenciales; existe `.env.example`. | `—` |
 | **CP-RNF10-2** | RNF-10 | Prueba de Seguridad | Iniciar sesión con el correo `' OR '1'='1`. | Rechazado sin acceso; la BD no se altera. | `401` o `422` |
 
+### 3.11 Catálogo de estilos (v1.2)
+
+| ID | Requisito | Técnica | Condición / Entrada | Resultado Esperado | Código HTTP |
+|---|---|---|---|---|---|
+| **CP-RF33-1** | RF-33 | Partición Válida | El administrador crea el estilo "Fade bajo" con descripción y foto. | Estilo activo; el cliente lo ve en el catálogo. | `201 Created` |
+| **CP-RF33-2** | RF-33 | Partición Válida | Crear un estilo sin foto (ausente, vacía o con espacios). | Estilo guardado con foto `null`. | `201 Created` |
+| **CP-RF33-3** | RF-33 | Valor Límite | Crear un estilo sin nombre, con nombre vacío o de 101 caracteres, sin descripción, con descripción vacía o de 1001 caracteres, o con una URL de foto de 256 caracteres. | Error de validación; no se guarda. | `422 Unprocessable` |
+| **CP-RF33-4** | RF-33 | Partición Válida | Cambiar el nombre, la descripción y la foto de un estilo. | El cliente ve los datos actualizados. | `200 OK` |
+| **CP-RF33-5** | RF-33 | Partición Inválida | Editar un estilo dejando el nombre o la descripción vacíos o nulos. | Error de validación; el estilo conserva sus datos. | `422 Unprocessable` |
+| **CP-RF33-6** | RF-33 | Partición Válida | Eliminar un estilo que ya tiene citas. | Queda inactivo, deja de ofrecerse y las citas lo conservan. | `200 OK` |
+| **CP-RF33-7** | RF-33 | Partición Inválida | Editar o eliminar un estilo inexistente o ya eliminado. | No encontrado. | `404 Not Found` |
+| **CP-RF33-8** | RF-33 | Partición Válida | El cliente y el administrador consultan el catálogo; un barbero y un usuario sin sesión intentan consultarlo. | Cliente y administrador ven solo los activos; el barbero recibe `403` y sin sesión `401`. | `200 OK` |
+| **CP-RF34-1** | RF-34 | Partición Válida | El cliente agenda eligiendo un estilo activo. | Cita creada con `estilo_id` y el estilo (nombre, descripción, foto) en la respuesta. | `201 Created` |
+| **CP-RF34-2** | RF-34 | Partición Inválida | Con estilos activos, agendar sin estilo (PN-14). | Rechazada; se pide elegir un estilo; no se envía correo. | `400 Bad Request` |
+| **CP-RF34-3** | RF-34 | Partición Inválida | Agendar con un estilo inexistente o eliminado. | Rechazada; el estilo no está disponible. | `404 Not Found` |
+| **CP-RF34-4** | RF-34 | Partición Válida | Sin estilos activos, agendar sin estilo (PN-14). | Cita creada sin estilo. | `201 Created` |
+| **CP-RF34-5** | RF-34 | Partición Válida | Agendar con estilo y revisar el correo de confirmación. | El correo incluye el estilo elegido. | `201 Created` |
+| **CP-RF34-6** | RF-34 | Partición Válida | Reprogramar una cita que tiene estilo. | La cita conserva su estilo. | `200 OK` |
+| **CP-RF34-7** | RF-34 | Integridad (RNF-07) | Borrar físicamente de la BD un estilo con citas. | La clave foránea lo impide; por eso la eliminación del administrador es lógica. | `—` |
+| **CP-RF34-8** | RF-34 | Prueba de Usabilidad | En el paso de servicios, abrir "Ver descripción" de un estilo y cerrarlo con la "X"; intentar continuar sin estilo. | El modal muestra foto, nombre y descripción; sin estilo el botón "Siguiente" no avanza y se indica qué falta. | `—` |
+
+### 3.12 Migración y estado de la reserva (v1.2)
+
+| ID | Requisito | Técnica | Condición / Entrada | Resultado Esperado | Código HTTP |
+|---|---|---|---|---|---|
+| **CP-MIG-1** | RNF-07 | Prueba de Migración | Ejecutar `migrar.py` sobre una base v1.1 con citas y servicios. | Se crea `estilos`, se agregan `servicios.descripcion` y `citas.estilo_id`; no se pierde ningún dato; correrla dos veces no falla. | `—` |
+| **CP-MIG-2** | RNF-07 | Prueba de Migración | Ejecutar `migrar.py` sobre una base vacía. | Se crea el esquema v1.2 completo. | `—` |
+| **CP-MIG-3** | RNF-07 | Prueba de Migración | Aplicar `migraciones/v1_2_sqlite.sql` a una base v1.1 y comparar con el esquema de los modelos. | Mismas tablas y columnas. | `—` |
+| **CP-MIG-4** | RNF-07 | Inspección de Código | Revisar `migraciones/v1_2_mysql.sql`. | Contiene los mismos cambios (tabla, columnas, clave foránea e índice). | `—` |
+| **CP-FE-1** | RF-13 a RF-19 | Prueba Unitaria (frontend) | Recorrer el asistente con `reservaReducer`. | Orden Barbero → Servicios → Fecha y Hora → Confirmación; el estilo se guarda por id; cambiar barbero, servicios o fecha descarta el turno; `pasoMaximo` impide saltar pasos. | `—` |
+| **CP-FE-2** | RF-19, RF-34 | Prueba Unitaria (frontend) | Armar el cuerpo de la cita con `cuerpoDeCita`. | Incluye `estilo_id` y no incluye `notas`. | `—` |
+
 ---
 
 ## 4. Automatización con Pytest
@@ -274,6 +322,10 @@ También se probaron las fronteras de las políticas del negocio, con un valor j
   ```bash
   pytest tests/ -v
   ```
+* **Frontend (v1.2):** las pruebas unitarias de `api.js` y del estado del asistente (`reservaEstado.js`) corren con el ejecutor nativo de Node:
+  ```bash
+  cd src/frontend && npm test
+  ```
 
 Los casos con código `—` (interfaz, correo e inspección) se verifican manualmente o con herramientas fuera de `pytest`.
 
@@ -281,7 +333,9 @@ Los casos con código `—` (interfaz, correo e inspección) se verifican manual
 
 ## 5. Supuestos y Observaciones
 
-- **Franja del día:** se asume que un horario pertenece a la franja según su hora de inicio (CP-RF17-3).
+- **Franja del día:** desde la v1.2 el cliente no elige franja; la API la acepta como filtro opcional y, en ese caso, un horario pertenece a la franja según su hora de inicio (CP-RF17-3).
+- **Estilo obligatorio (PN-14):** se asume que el estilo es obligatorio solo si hay al menos un estilo activo, para no bloquear las reservas mientras el administrador arma el catálogo (CP-RF34-2, CP-RF34-4). La política está marcada como propuesta.
+- **Fotos:** la foto del barbero y la del estilo se guardan como URL, igual que en la v1.1; la subida de archivos queda fuera del alcance.
 - **Solapamiento a nivel de servicio:** los casos CP-RF20-3 a CP-RF20-8 usan horas como 10:29 o 09:31, que no coinciden con el intervalo de 30 minutos (PN-02). Se ejecutan sobre la lógica de solapamiento (servicio o API), no desde la interfaz, que solo ofrece horarios en intervalos de 30 minutos.
 - **Duración máxima de 240 minutos:** viene de la partición del plan v1.0 pero no aparece en RF-08 de la especificación. Hay que confirmarla y agregarla al requisito, o retirar CP-RF08-6 y CP-RF08-7.
 - **Límite exacto de 12 horas:** no se prueba con exactamente 12 horas de anticipación, porque la especificación no dice si en ese instante se permite. Hay que definirlo.

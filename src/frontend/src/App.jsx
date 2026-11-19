@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './AuthContext';
+import { BookingProvider } from './BookingContext';
 import { pestanaInicial, puedeVerPestana } from './roles';
 import Navbar from './components/Navbar';
 import AuthPage, { ResetPasswordPage } from './components/AuthPage';
@@ -98,7 +99,10 @@ function AppContent() {
 export default function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      {/* Reserva en curso del cliente (v1.2): sobrevive a los cambios de pestaña y se reinicia al cambiar de usuario */}
+      <BookingProvider>
+        <AppContent />
+      </BookingProvider>
     </AuthProvider>
   );
 }
