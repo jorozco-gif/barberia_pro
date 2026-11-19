@@ -7,7 +7,8 @@ from pydantic import (
 
 from politicas import INTERVALO_MINUTOS  # PN-02
 
-# RF-17: franja del día que elige el cliente (las horas de cada franja, PN-03, van en la capa de servicios)
+# RF-17: franja del día (las horas de cada franja, PN-03, van en la capa de servicios). Desde la v1.2 el cliente
+# ya no la elige al reservar (ve todos los turnos del día); se conserva como filtro opcional de la API.
 Franja = Literal["Mañana", "Tarde", "Noche"]
 
 # RF-27: estados que puede marcar el barbero sobre una cita
@@ -21,6 +22,14 @@ def _no_vacio(v: str, mensaje: str = "El campo no puede estar vacío ni contener
     if not v:
         raise ValueError(mensaje)
     return v
+
+
+def _texto_opcional(v: Optional[str]) -> Optional[str]:
+    """Quita espacios a un texto opcional. Un texto vacío o solo con espacios se guarda como nulo."""
+    if v is None:
+        return None
+    v = v.strip()
+    return v or None
 
 
 def _validar_intervalo(v: datetime.time) -> datetime.time:
@@ -100,9 +109,13 @@ class BarberoCreate(BaseModel):
 
 
 class BarberoUpdate(BaseModel):
-    """Solo se modifican los campos enviados. El nombre no puede quedar vacío ni nulo (CA-06.2)."""
+    """Solo se modifican los campos enviados (RF-06, v1.2: nombre, correo, contraseña y foto).
+    El nombre no puede quedar vacío ni nulo (CA-06.2); el correo y la contraseña no se pueden enviar nulos.
+    La foto sí admite nulo o vacío para quitarla."""
 
     nombre: Optional[str] = Field(None, min_length=2, max_length=120)
+    email: Optional[EmailStr] = None
+    password: Optional[str] = Field(None, min_length=8, max_length=128)
     foto_url: Optional[str] = Field(None, max_length=255)
 
     @field_validator("nombre")
@@ -111,6 +124,18 @@ class BarberoUpdate(BaseModel):
         if v is None:
             raise ValueError("El nombre es obligatorio.")
         return _no_vacio(v, "El nombre es obligatorio.")
+
+    @field_validator("email", "password")
+    @classmethod
+    def rechazar_nulos(cls, v):
+        if v is None:
+            raise ValueError("El campo no puede enviarse vacío.")
+        return v
+
+    @field_validator("foto_url")
+    @classmethod
+    def validar_foto(cls, v: Optional[str]) -> Optional[str]:
+        return _texto_opcional(v)
 
 
 class BarberoResponse(BaseModel):
@@ -141,19 +166,32 @@ class ServicioCreate(BaseModel):
     nombre: str = Field(..., min_length=2, max_length=100)
     duracion_minutos: int = Field(..., gt=0, le=240, description="Mayor a 0 y hasta 4 horas")
     precio: Decimal = Field(..., ge=0, description="No puede ser negativo")
+    descripcion: Optional[str] = Field(None, max_length=1000, description="Opcional (v1.2): se muestra en un modal")
 
     @field_validator("nombre")
     @classmethod
     def validar_nombre(cls, v: str) -> str:
         return _no_vacio(v, "El nombre del servicio es obligatorio.")
 
+    @field_validator("descripcion")
+    @classmethod
+    def validar_descripcion(cls, v: Optional[str]) -> Optional[str]:
+        return _texto_opcional(v)
+
 
 class ServicioUpdate(BaseModel):
-    """Solo se modifican los campos enviados (RF-09). Ningún campo puede enviarse nulo."""
+    """Solo se modifican los campos enviados (RF-09). Nombre, duración y precio no pueden enviarse nulos;
+    la descripción sí (nula o vacía la quita)."""
 
     nombre: Optional[str] = Field(None, min_length=2, max_length=100)
     duracion_minutos: Optional[int] = Field(None, gt=0, le=240)
     precio: Optional[Decimal] = Field(None, ge=0)
+    descripcion: Optional[str] = Field(None, max_length=1000)
+
+    @field_validator("descripcion")
+    @classmethod
+    def validar_descripcion(cls, v: Optional[str]) -> Optional[str]:
+        return _texto_opcional(v)
 
     @field_validator("nombre", "duracion_minutos", "precio")
     @classmethod
@@ -173,7 +211,78 @@ class ServicioResponse(BaseModel):
     nombre: str
     duracion_minutos: int
     precio: Decimal
+    descripcion: Optional[str] = None
     activo: bool
+    model_config = LEER_DESDE_ORM
+
+
+# ==========================================
+# Estilos (v1.2: RF-33 y RF-34)
+# ==========================================
+class EstiloCreate(BaseModel):
+    nombre: str = Field(..., min_length=2, max_length=100)
+    descripcion: str = Field(..., min_length=1, max_length=1000, description="Se muestra al cliente en un modal")
+    foto_url: Optional[str] = Field(None, max_length=255)
+
+    @field_validator("nombre")
+    @classmethod
+    def validar_nombre(cls, v: str) -> str:
+        return _no_vacio(v, "El nombre del estilo es obligatorio.")
+
+    @field_validator("descripcion")
+    @classmethod
+    def validar_descripcion(cls, v: str) -> str:
+        return _no_vacio(v, "La descripción del estilo es obligatoria.")
+
+    @field_validator("foto_url")
+    @classmethod
+    def validar_foto(cls, v: Optional[str]) -> Optional[str]:
+        return _texto_opcional(v)
+
+
+class EstiloUpdate(BaseModel):
+    """Solo se modifican los campos enviados. Nombre y descripción no pueden quedar nulos ni vacíos;
+    la foto sí (nula o vacía la quita)."""
+
+    nombre: Optional[str] = Field(None, min_length=2, max_length=100)
+    descripcion: Optional[str] = Field(None, min_length=1, max_length=1000)
+    foto_url: Optional[str] = Field(None, max_length=255)
+
+    @field_validator("nombre")
+    @classmethod
+    def validar_nombre(cls, v: Optional[str]) -> str:
+        if v is None:
+            raise ValueError("El nombre del estilo es obligatorio.")
+        return _no_vacio(v, "El nombre del estilo es obligatorio.")
+
+    @field_validator("descripcion")
+    @classmethod
+    def validar_descripcion(cls, v: Optional[str]) -> str:
+        if v is None:
+            raise ValueError("La descripción del estilo es obligatoria.")
+        return _no_vacio(v, "La descripción del estilo es obligatoria.")
+
+    @field_validator("foto_url")
+    @classmethod
+    def validar_foto(cls, v: Optional[str]) -> Optional[str]:
+        return _texto_opcional(v)
+
+
+class EstiloResponse(BaseModel):
+    id: int
+    nombre: str
+    descripcion: str
+    foto_url: Optional[str] = None
+    activo: bool
+    model_config = LEER_DESDE_ORM
+
+
+class EstiloEnCita(BaseModel):
+    """Estilo que se muestra junto a la cita (confirmación, consulta, agenda del barbero)."""
+
+    id: int
+    nombre: str
+    foto_url: Optional[str] = None
     model_config = LEER_DESDE_ORM
 
 
@@ -233,13 +342,16 @@ class BloqueoResponse(BaseModel):
 # Citas (RF-14 a RF-20, RF-22 a RF-28)
 # ==========================================
 class CitaCreate(BaseModel):
-    """El cliente sale de la sesión, no del cuerpo. La fecha pasada (HTTP 400) se valida en el servicio."""
+    """El cliente sale de la sesión, no del cuerpo. La fecha pasada (HTTP 400) y el intervalo de PN-02 se validan
+    en el servicio: una hora fuera del intervalo que choca con otra cita debe responder 409, no 422 (CA-20.3).
+    v1.2: se elimina el campo de notas; la personalización es el estilo (RF-34). Es obligatorio solo si el
+    catálogo tiene estilos activos (PN-14), por eso esa regla también se valida en el servicio."""
 
     barbero_id: int = Field(..., gt=0)
     servicios_ids: List[int] = Field(..., min_length=1, description="Uno o varios servicios (RF-14)")
+    estilo_id: Optional[int] = Field(None, gt=0, description="Estilo elegido (RF-34)")
     fecha: datetime.date
     hora_inicio: datetime.time
-    notas: Optional[str] = Field(None, max_length=500)
 
     @field_validator("servicios_ids")
     @classmethod
@@ -250,22 +362,12 @@ class CitaCreate(BaseModel):
             raise ValueError("No repitas el mismo servicio.")
         return v
 
-    @field_validator("hora_inicio")
-    @classmethod
-    def validar_intervalo(cls, v: datetime.time) -> datetime.time:
-        return _validar_intervalo(v)
-
 
 class CitaReprogramar(BaseModel):
-    """Nuevo horario del mismo barbero (RF-24)."""
+    """Nuevo horario del mismo barbero (RF-24). Igual que en CitaCreate, el intervalo de PN-02 se valida en el servicio."""
 
     fecha: datetime.date
     hora_inicio: datetime.time
-
-    @field_validator("hora_inicio")
-    @classmethod
-    def validar_intervalo(cls, v: datetime.time) -> datetime.time:
-        return _validar_intervalo(v)
 
 
 class CitaEstadoUpdate(BaseModel):
@@ -301,10 +403,12 @@ class CitaResponse(BaseModel):
     estado: str
     total: Decimal
     reprogramada: bool
-    notas: Optional[str] = None
+    estilo_id: Optional[int] = None
+    notas: Optional[str] = None  # legado v1.1: solo las citas anteriores a la v1.2 pueden tenerlas
     creada_el: datetime.datetime
     cliente: Optional[UsuarioResponse] = None
     barbero: Optional[BarberoPublico] = None
+    estilo: Optional[EstiloEnCita] = None
     servicios: List[CitaServicioResponse] = []
     model_config = LEER_DESDE_ORM
 
@@ -317,3 +421,18 @@ class SlotHorario(BaseModel):
     hora_fin: str
     disponible: bool
     motivo: Optional[str] = None
+
+
+# ==========================================
+# Respuestas auxiliares
+# ==========================================
+class MensajeResponse(BaseModel):
+    detail: str
+
+
+class ResumenCitaResponse(BaseModel):
+    """Total y duración de los servicios elegidos (RF-15)."""
+
+    servicios: List[ServicioResponse]
+    total: Decimal
+    duracion_total_minutos: int

@@ -12,7 +12,8 @@ except ImportError:
 
 from sqlalchemy import inspect
 
-from database import SessionLocal, engine, Base
+from database import SessionLocal, engine
+import migrar
 import models
 from security import hash_password
 
@@ -29,13 +30,27 @@ BARBEROS_EJEMPLO = [
     ("Lucas 'Urban' Romero", "lucas@barbershop.pro", "3125558899"),
 ]
 
-# (nombre, duración en minutos, precio en pesos). Precios de ejemplo, el dueño de la barbería los confirma (PN-12).
+# (nombre, duración en minutos, precio en pesos, descripción). Precios de ejemplo, el dueño de la barbería
+# los confirma (PN-12). La descripción es opcional (v1.2): el último servicio no la tiene a propósito.
 SERVICIOS_EJEMPLO = [
-    ("Corte Clásico", 30, Decimal("20000")),
-    ("Barba Spa", 30, Decimal("15000")),
-    ("Combo Corte + Barba", 45, Decimal("30000")),
-    ("Perfilado y Cejas", 30, Decimal("10000")),
-    ("Colorimetría y Platinado", 45, Decimal("45000")),
+    ("Corte Clásico", 30, Decimal("20000"),
+     "Corte a máquina y tijera según el estilo que elijas, con lavado y peinado final."),
+    ("Barba Spa", 30, Decimal("15000"),
+     "Perfilado de barba con toalla caliente, aceites hidratantes y masaje facial."),
+    ("Combo Corte + Barba", 45, Decimal("30000"),
+     "Corte completo más arreglo de barba en una sola visita."),
+    ("Perfilado y Cejas", 30, Decimal("10000"),
+     "Definición de contornos, patillas y cejas con navaja."),
+    ("Colorimetría y Platinado", 45, Decimal("45000"), None),
+]
+
+# (nombre, descripción). Catálogo inicial de estilos (RF-33); el administrador lo ajusta desde su panel.
+ESTILOS_EJEMPLO = [
+    ("Fade bajo", "Degradado que empieza muy cerca de la oreja y la nuca. Discreto y fácil de mantener."),
+    ("Pompadour", "Laterales cortos y volumen peinado hacia atrás en la parte superior."),
+    ("Buzz cut", "Corte uniforme a máquina en toda la cabeza. Práctico y sin necesidad de peinado."),
+    ("Crop texturizado", "Parte superior con textura y flequillo corto hacia adelante, laterales degradados."),
+    ("Clásico de tijera", "Corte tradicional a tijera, con raya lateral y acabado natural."),
 ]
 
 
@@ -107,23 +122,35 @@ def crear_barberos(db):
 
 
 def crear_servicios(db):
-    for nombre, duracion, precio in SERVICIOS_EJEMPLO:
+    for nombre, duracion, precio, descripcion in SERVICIOS_EJEMPLO:
         if db.query(models.Servicio).filter_by(nombre=nombre).first():
             continue
-        db.add(models.Servicio(nombre=nombre, duracion_minutos=duracion, precio=precio, activo=True))
+        db.add(models.Servicio(
+            nombre=nombre, duracion_minutos=duracion, precio=precio, descripcion=descripcion, activo=True,
+        ))
         print(f"Servicio agregado: {nombre}")
+
+
+def crear_estilos(db):
+    for nombre, descripcion in ESTILOS_EJEMPLO:
+        if db.query(models.Estilo).filter_by(nombre=nombre).first():
+            continue
+        db.add(models.Estilo(nombre=nombre, descripcion=descripcion, activo=True))
+        print(f"Estilo agregado: {nombre}")
 
 
 def poblar_datos_iniciales():
     _verificar_base_v11()
-    # Asegurar que las tablas existan
-    Base.metadata.create_all(bind=engine)
+    # Crea las tablas que falten y aplica los cambios de la v1.2 a una base de la v1.1 (migrar.py)
+    for cambio in migrar.actualizar_esquema(engine):
+        print(cambio)
     db = SessionLocal()
 
     try:
         crear_administrador(db)
         crear_barberos(db)
         crear_servicios(db)
+        crear_estilos(db)
         db.commit()
         print("Base de datos poblada exitosamente.")
 

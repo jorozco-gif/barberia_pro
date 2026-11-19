@@ -45,6 +45,7 @@ class Usuario(Base):
     tokens_recuperacion = relationship(
         "TokenRecuperacion", back_populates="usuario", cascade="all, delete-orphan"
     )
+    sesiones = relationship("Sesion", back_populates="usuario", cascade="all, delete-orphan")
 
 
 class Barbero(Base):
@@ -86,9 +87,28 @@ class Servicio(Base):
     nombre = Column(String(100), nullable=False)
     duracion_minutos = Column(Integer, nullable=False)  # Ej: 30, 45, 60
     precio = Column(Numeric(10, 2), nullable=False)  # Ej: 15000.00
+    descripcion = Column(Text, nullable=True)  # v1.2 (RF-08, RF-14): opcional, el cliente la ve en un modal
     activo = Column(Boolean, default=True, nullable=False)  # RF-10: eliminación lógica
 
     citas_servicios = relationship("CitaServicio", back_populates="servicio")
+
+
+class Estilo(Base):
+    """Catálogo de estilos de corte que el cliente elige al reservar (v1.2: RF-33 y RF-34).
+    Reemplaza el campo libre de notas: la personalización de la cita ahora es el estilo elegido."""
+
+    __tablename__ = "estilos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nombre = Column(String(100), nullable=False)
+    descripcion = Column(Text, nullable=False)  # obligatoria: es lo que el cliente lee en el modal
+    foto_url = Column(String(255), nullable=True)
+    activo = Column(Boolean, default=True, nullable=False)  # eliminación lógica: conserva el historial de citas
+
+    # Sin cascade: las citas que ya eligieron el estilo lo conservan aunque se elimine del catálogo.
+    # passive_deletes="all" evita que el ORM ponga en nulo el estilo de esas citas: borrar la fila
+    # lo impide la clave foránea RESTRICT (RNF-07).
+    citas = relationship("Cita", back_populates="estilo", passive_deletes="all")
 
 
 class Cita(Base):
@@ -103,6 +123,9 @@ class Cita(Base):
         Integer, ForeignKey("usuarios.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     barbero_id = Column(Integer, ForeignKey("barberos.id", ondelete="RESTRICT"), nullable=False)
+    # v1.2 (RF-34): estilo elegido por el cliente. Es nulo en las citas anteriores a la v1.2
+    # y cuando el catálogo de estilos está vacío.
+    estilo_id = Column(Integer, ForeignKey("estilos.id", ondelete="RESTRICT"), nullable=True, index=True)
 
     # Horario de la reserva
     fecha = Column(Date, nullable=False, index=True)
@@ -113,11 +136,14 @@ class Cita(Base):
     estado = Column(String(30), default=ESTADO_PROGRAMADA, nullable=False, index=True)
     total = Column(Numeric(10, 2), default=0, nullable=False)
     reprogramada = Column(Boolean, default=False, nullable=False)  # PN-05: una sola reprogramación
+    # Legado v1.1: desde la v1.2 el cliente ya no escribe notas (la personalización es el estilo).
+    # La columna se conserva para no perder lo que escribieron las citas anteriores.
     notas = Column(Text, nullable=True)
     creada_el = Column(DateTime, default=ahora_colombia, nullable=False)
 
     cliente = relationship("Usuario", back_populates="citas")
     barbero = relationship("Barbero", back_populates="citas")
+    estilo = relationship("Estilo", back_populates="citas")
     servicios = relationship("CitaServicio", back_populates="cita", cascade="all, delete-orphan")
 
 
@@ -184,3 +210,20 @@ class TokenRecuperacion(Base):
     usado = Column(Boolean, default=False, nullable=False)
 
     usuario = relationship("Usuario", back_populates="tokens_recuperacion")
+
+
+class Sesion(Base):
+    """Sesión abierta de un usuario (RF-02, RF-03, RNF-02). Se guarda solo el hash del token.
+    La sesión expira cuando pasan 15 minutos desde la última actividad (PN-07)."""
+
+    __tablename__ = "sesiones"
+
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(
+        Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)
+    creada_el = Column(DateTime, nullable=False)
+    ultima_actividad = Column(DateTime, nullable=False)
+
+    usuario = relationship("Usuario", back_populates="sesiones")
